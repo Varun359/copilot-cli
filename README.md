@@ -7,7 +7,7 @@
 * **Documentation**: [https://aws.github.io/copilot-cli/](https://aws.github.io/copilot-cli/)
 
 The AWS Copilot CLI is a tool for developers to build, release and operate production-ready containerized applications
-on AWS App Runner or Amazon ECS on AWS Fargate.
+on AWS App Runner or Amazon ECS on AWS Fargate
 
 Use Copilot to:
 * Deploy production-ready, scalable services on AWS from a Dockerfile in one command.
