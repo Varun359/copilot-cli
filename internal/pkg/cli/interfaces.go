@@ -328,6 +328,7 @@ type wsEnvironmentReader interface {
 
 type wsPipelineReader interface {
 	wsPipelineGetter
+	wsPipelineManifestReader
 	relPath
 }
 
