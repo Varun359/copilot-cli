@@ -53,7 +53,8 @@ func newOverridePipelineOpts(vars overrideVars) (*overridePipelineOpts, error) {
 			cfnPrompt:    selector.NewCFNSelector(prompt),
 			spinner:      termprogress.NewSpinner(log.DiagnosticWriter),
 		},
-		ws: ws,
+		ws:       ws,
+		wsPrompt: selector.NewWsPipelineSelector(prompt, ws),
 	}
 	//cmd.validateOrAskName = cmd.validateOrAskPipelineName
 	return cmd, nil
@@ -78,8 +79,10 @@ func (o *overridePipelineOpts) Ask() error {
 // Execute writes IaC override files to the local workspace.
 func (o *overridePipelineOpts) Execute() error {
 	fmt.Println("Hello I am Override command for the pipeline")
-
-	return nil
+	o.overrideOpts.dir = func() string {
+		return o.ws.PipelineOverridesPath()
+	}
+	return o.overrideOpts.Execute()
 
 }
 
@@ -114,7 +117,7 @@ func (o *overridePipelineOpts) validatePipelineName() error {
 // }
 
 func (o *overridePipelineOpts) askPipelineName() error {
-	//fmt.Println("Hey I am inside askPipelineName() function")
+	fmt.Println("Hey I am inside askPipelineName() function")
 	pipeline, err := o.wsPrompt.WsPipeline("Which pipeline's resources would you like to override?", "")
 	if err != nil {
 		return fmt.Errorf("select pipeline name from workspace: %v", err)
