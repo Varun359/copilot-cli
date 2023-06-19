@@ -330,7 +330,7 @@ type wsPipelineReader interface {
 	wsPipelineGetter
 	wsPipelineManifestReader
 	relPath
-	PipelineOverridesPath() string
+	PipelineOverridesPath(string) string
 }
 
 type wsPipelineGetter interface {

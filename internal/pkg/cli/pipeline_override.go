@@ -57,6 +57,7 @@ func newOverridePipelineOpts(vars overrideVars) (*overridePipelineOpts, error) {
 		wsPrompt: selector.NewWsPipelineSelector(prompt, ws),
 	}
 	//cmd.validateOrAskName = cmd.validateOrAskPipelineName
+	//cmd.overrideOpts.packageCmd = cmd.newPipelinePackageCmd
 	return cmd, nil
 }
 
@@ -71,7 +72,9 @@ func (o *overridePipelineOpts) Validate() error {
 // Ask prompts for and validates any required flags.
 func (o *overridePipelineOpts) Ask() error {
 	if o.name == "" {
-		return o.askPipelineName()
+		if err := o.askPipelineName(); err != nil {
+			return err
+		}
 	}
 	return o.overrideOpts.Ask()
 }
@@ -80,7 +83,7 @@ func (o *overridePipelineOpts) Ask() error {
 func (o *overridePipelineOpts) Execute() error {
 	fmt.Println("Hello I am Override command for the pipeline")
 	o.overrideOpts.dir = func() string {
-		return o.ws.PipelineOverridesPath()
+		return o.ws.PipelineOverridesPath(o.name)
 	}
 	return o.overrideOpts.Execute()
 
@@ -109,6 +112,18 @@ func (o *overridePipelineOpts) validatePipelineName() error {
 	return nil
 }
 
+// func (o *overrideEnvOpts) newPipelinePackageCmd(tplBuf stringWriteCloser) (executor, error) {
+// 	cmd, err := newPackageEnvOpts(packageEnvVars{
+// 		envName: o.name,
+// 		appName:      o.appName,
+// 	})
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	cmd.tplWriter = tplBuf
+// 	return cmd, nil
+// }
+
 // func (o *overridePipelineOpts) validateOrAskPipelineName() error {
 // 	if o.name == "" {
 // 		return o.askPipelineName()
@@ -119,6 +134,7 @@ func (o *overridePipelineOpts) validatePipelineName() error {
 func (o *overridePipelineOpts) askPipelineName() error {
 	fmt.Println("Hey I am inside askPipelineName() function")
 	pipeline, err := o.wsPrompt.WsPipeline("Which pipeline's resources would you like to override?", "")
+	fmt.Printf("The pipeline which you want to override is %v", pipeline.Name)
 	if err != nil {
 		return fmt.Errorf("select pipeline name from workspace: %v", err)
 	}
@@ -151,5 +167,6 @@ or add new resources to the service's AWS CloudFormation template.`,
 	cmd.Flags().StringVarP(&vars.appName, appFlag, appFlagShort, tryReadingAppName(), appFlagDescription)
 	cmd.Flags().StringVar(&vars.iacTool, iacToolFlag, "", iacToolFlagDescription)
 	cmd.Flags().StringVar(&vars.cdkLang, cdkLanguageFlag, typescriptCDKLang, cdkLanguageFlagDescription)
+	cmd.Flags().BoolVar(&vars.skipResources, skipResourcesFlag, false, skipResourcesFlagDescription)
 	return cmd
 }

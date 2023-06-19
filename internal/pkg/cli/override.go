@@ -87,9 +87,11 @@ func (o *overrideOpts) Validate() error {
 
 // Ask prompts for and validates any required flags.
 func (o *overrideOpts) Ask() error {
+	fmt.Println("I am in the ask of override.go")
 	if err := o.validateOrAskIaCTool(); err != nil {
 		return err
 	}
+	fmt.Printf("The tool which you want to use is in Ask() override.go fun %v", o.iacTool)
 	return o.askResourcesToOverride()
 }
 
@@ -188,6 +190,7 @@ func (o *overrideOpts) askResourcesToOverride() error {
 	buf := &closableStringBuilder{
 		Builder: new(strings.Builder),
 	}
+
 	pkgCmd, err := o.packageCmd(buf)
 	if err != nil {
 		o.spinner.Stop("")
@@ -197,7 +200,9 @@ func (o *overrideOpts) askResourcesToOverride() error {
 		o.spinner.Stop("")
 		return fmt.Errorf("generate CloudFormation template for %q: %v", o.name, err)
 	}
+
 	o.spinner.Stop("")
+	fmt.Println("buff", buf.String())
 	msg := fmt.Sprintf("Which resources in %q would you like to override?", o.name)
 	resources, err := o.cfnPrompt.Resources(msg, "Resources:", "", buf.String())
 	if err != nil {

@@ -493,8 +493,8 @@ func (ws *Workspace) WorkloadOverridesPath(name string) string {
 	return filepath.Join(ws.CopilotDirAbs, name, overridesDirName)
 }
 
-func (ws *Workspace) PipelineOverridesPath() string {
-	return filepath.Join(ws.CopilotDirAbs, pipelinesDirName, overridesDirName)
+func (ws *Workspace) PipelineOverridesPath(name string) string {
+	return filepath.Join(ws.CopilotDirAbs, pipelinesDirName, name, overridesDirName)
 }
 
 // ListFiles returns a list of file paths to all the files under the dir.
