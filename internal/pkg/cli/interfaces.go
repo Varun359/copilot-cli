@@ -391,6 +391,7 @@ type pipelineDeployer interface {
 	PipelineExists(env *deploy.CreatePipelineInput) (bool, error)
 	DeletePipeline(pipeline deploy.Pipeline) error
 	AddPipelineResourcesToApp(app *config.Application, region string) error
+	Template(stackName string) (string, error)
 	appResourcesGetter
 	// TODO: Add StreamPipelineCreation method
 }
@@ -704,4 +705,8 @@ type envPackager interface {
 	UploadArtifacts() (*clideploy.UploadEnvArtifactsOutput, error)
 	AddonsTemplate() (string, error)
 	templateDiffer
+}
+
+type pipelineStackConfig interface {
+	Template() (string, error)
 }
