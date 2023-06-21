@@ -3468,6 +3468,20 @@ func (mr *MockwsPipelineReaderMockRecorder) ListWorkloads() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListWorkloads", reflect.TypeOf((*MockwsPipelineReader)(nil).ListWorkloads))
 }
 
+// PipelineOverridesPath mocks base method.
+func (m *MockwsPipelineReader) PipelineOverridesPath(arg0 string) string {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "PipelineOverridesPath", arg0)
+	ret0, _ := ret[0].(string)
+	return ret0
+}
+
+// PipelineOverridesPath indicates an expected call of PipelineOverridesPath.
+func (mr *MockwsPipelineReaderMockRecorder) PipelineOverridesPath(arg0 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PipelineOverridesPath", reflect.TypeOf((*MockwsPipelineReader)(nil).PipelineOverridesPath), arg0)
+}
+
 // ReadPipelineManifest mocks base method.
 func (m *MockwsPipelineReader) ReadPipelineManifest(path string) (*manifest.Pipeline, error) {
 	m.ctrl.T.Helper()

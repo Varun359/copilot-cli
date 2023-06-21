@@ -57,7 +57,7 @@ func newOverridePipelineOpts(vars overrideVars) (*overridePipelineOpts, error) {
 		wsPrompt: selector.NewWsPipelineSelector(prompt, ws),
 	}
 	//cmd.validateOrAskName = cmd.validateOrAskPipelineName
-	//cmd.overrideOpts.packageCmd = cmd.newPipelinePackageCmd
+	cmd.overrideOpts.packageCmd = cmd.newPipelinePackageCmd
 	return cmd, nil
 }
 
@@ -112,25 +112,6 @@ func (o *overridePipelineOpts) validatePipelineName() error {
 	return nil
 }
 
-// func (o *overrideEnvOpts) newPipelinePackageCmd(tplBuf stringWriteCloser) (executor, error) {
-// 	cmd, err := newPackageEnvOpts(packageEnvVars{
-// 		envName: o.name,
-// 		appName:      o.appName,
-// 	})
-// 	if err != nil {
-// 		return nil, err
-// 	}
-// 	cmd.tplWriter = tplBuf
-// 	return cmd, nil
-// }
-
-// func (o *overridePipelineOpts) validateOrAskPipelineName() error {
-// 	if o.name == "" {
-// 		return o.askPipelineName()
-// 	}
-// 	return nil
-// }
-
 func (o *overridePipelineOpts) askPipelineName() error {
 	fmt.Println("Hey I am inside askPipelineName() function")
 	pipeline, err := o.wsPrompt.WsPipeline("Which pipeline's resources would you like to override?", "")
@@ -140,6 +121,18 @@ func (o *overridePipelineOpts) askPipelineName() error {
 	}
 	o.name = pipeline.Name
 	return nil
+}
+
+func (o *overridePipelineOpts) newPipelinePackageCmd(tplBuf stringWriteCloser) (executor, error) {
+	cmd, err := newPackagePipelineOpts(packagePipelineVars{
+		name:    o.name,
+		appName: o.appName,
+	})
+	if err != nil {
+		return nil, err
+	}
+	cmd.tmplWriter = tplBuf
+	return cmd, nil
 }
 
 func buildPipelineOverrideCmd() *cobra.Command {
