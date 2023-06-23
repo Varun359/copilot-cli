@@ -82,6 +82,7 @@ func (o *overridePipelineOpts) Ask() error {
 // Execute writes IaC override files to the local workspace.
 func (o *overridePipelineOpts) Execute() error {
 	fmt.Println("Hello I am Override command for the pipeline")
+	o.requiresEnv = false
 	o.overrideOpts.dir = func() string {
 		return o.ws.PipelineOverridesPath(o.name)
 	}

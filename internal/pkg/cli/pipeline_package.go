@@ -7,18 +7,21 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ssm"
 	"github.com/aws/copilot-cli/internal/pkg/aws/identity"
 	rg "github.com/aws/copilot-cli/internal/pkg/aws/resourcegroups"
 	"github.com/aws/copilot-cli/internal/pkg/aws/sessions"
+	clideploy "github.com/aws/copilot-cli/internal/pkg/cli/deploy"
 	"github.com/aws/copilot-cli/internal/pkg/cli/list"
 	"github.com/aws/copilot-cli/internal/pkg/config"
 	"github.com/aws/copilot-cli/internal/pkg/deploy"
 	deploycfn "github.com/aws/copilot-cli/internal/pkg/deploy/cloudformation"
 	"github.com/aws/copilot-cli/internal/pkg/deploy/cloudformation/stack"
 	"github.com/aws/copilot-cli/internal/pkg/manifest"
+	"github.com/aws/copilot-cli/internal/pkg/override"
 	"github.com/aws/copilot-cli/internal/pkg/term/prompt"
 	"github.com/aws/copilot-cli/internal/pkg/term/selector"
 	"github.com/aws/copilot-cli/internal/pkg/workspace"
@@ -43,6 +46,7 @@ type packagePipelineOpts struct {
 	configureDeployedPipelineLister func() deployedPipelineLister
 	newSvcListCmd                   func(io.Writer, string) cmd
 	newJobListCmd                   func(io.Writer, string) cmd
+	sessProvider                    *sessions.Provider
 	//        wsPipelineSelector
 
 	//catched variables
@@ -54,7 +58,8 @@ type packagePipelineOpts struct {
 }
 
 func newPackagePipelineOpts(vars packagePipelineVars) (*packagePipelineOpts, error) {
-	defaultSession, err := sessions.ImmutableProvider(sessions.UserAgentExtras("pipeline deploy")).Default()
+	sessProvider := sessions.ImmutableProvider(sessions.UserAgentExtras("pipeline package"))
+	defaultSession, err := sessProvider.Default()
 	if err != nil {
 		return nil, fmt.Errorf("default session: %w", err)
 	}
@@ -70,6 +75,7 @@ func newPackagePipelineOpts(vars packagePipelineVars) (*packagePipelineOpts, err
 		tmplWriter:          os.Stdout,
 		ws:                  ws,
 		store:               store,
+		sessProvider:        sessProvider,
 		pipelineStackConfig: func(in *deploy.CreatePipelineInput) pipelineStackConfig {
 			return stack.NewPipelineStackConfig(in)
 		},
@@ -117,7 +123,10 @@ func newPackagePipelineOpts(vars packagePipelineVars) (*packagePipelineOpts, err
 }
 
 func (o *packagePipelineOpts) Execute() error {
-
+	_, file, no, ok := runtime.Caller(1)
+	if ok {
+		fmt.Printf("ths is in pipeline_package.go called from %s#%d\n", file, no)
+	}
 	// Read pipeline manifest.
 	pipeline, err := o.getPipelineMft()
 	if err != nil {
@@ -185,6 +194,19 @@ func (o *packagePipelineOpts) Execute() error {
 	if err = build.Init(pipeline.Build, filepath.Dir(relPath)); err != nil {
 		return err
 	}
+
+	fmt.Println("The session provider for pipeline is", o.sessProvider)
+	ovrdr, err := clideploy.NewOverrider(o.ws.PipelineOverridesPath(o.name), o.appName, "", afero.NewOsFs(), o.sessProvider)
+	if err != nil {
+		return err
+	}
+
+	overrider := ovrdr
+	if overrider == nil {
+		overrider = new(override.Noop)
+	}
+
+	fmt.Println("The ovrdr in pipeline package is", ovrdr)
 	deployPipelineInput := &deploy.CreatePipelineInput{
 		AppName:             o.appName,
 		Name:                o.name,
@@ -202,7 +224,6 @@ func (o *packagePipelineOpts) Execute() error {
 		return fmt.Errorf("generate the new template for diff: %w", err)
 	}
 
-	fmt.Println("this is the template", tpl)
 	if _, err := o.tmplWriter.Write([]byte(tpl)); err != nil {
 		return err
 	}
