@@ -34,7 +34,6 @@ type packagePipelineVars struct {
 
 type packagePipelineOpts struct {
 	packagePipelineVars
-	//deployPipelineOpts
 
 	pipelineDeployer                pipelineDeployer
 	tmplWriter                      io.WriteCloser
@@ -46,14 +45,12 @@ type packagePipelineOpts struct {
 	newSvcListCmd                   func(io.Writer, string) cmd
 	newJobListCmd                   func(io.Writer, string) cmd
 	sessProvider                    *sessions.Provider
-	//        wsPipelineSelector
 
 	//catched variables
 	pipelineMft *manifest.Pipeline
-	// pipeline    *workspace.PipelineManifest
-	app       *config.Application
-	svcBuffer *bytes.Buffer
-	jobBuffer *bytes.Buffer
+	app         *config.Application
+	svcBuffer   *bytes.Buffer
+	jobBuffer   *bytes.Buffer
 }
 
 func newPackagePipelineOpts(vars packagePipelineVars) (*packagePipelineOpts, error) {
@@ -112,7 +109,6 @@ func newPackagePipelineOpts(vars packagePipelineVars) (*packagePipelineOpts, err
 		},
 		svcBuffer: &bytes.Buffer{},
 		jobBuffer: &bytes.Buffer{},
-		// codestar:   cs.New(defaultSession),
 	}
 	opts.configureDeployedPipelineLister = func() deployedPipelineLister {
 		// Initialize the client only after the appName is asked.
@@ -123,28 +119,25 @@ func newPackagePipelineOpts(vars packagePipelineVars) (*packagePipelineOpts, err
 
 func (o *packagePipelineOpts) Execute() error {
 	// Read pipeline manifest.
-	pipeline, err := o.getPipelineMft()
+	pipelineMft, err := o.getPipelineMft()
 	if err != nil {
 		return err
 	}
 
 	// If the source has an existing connection, get the correlating ConnectionARN.
-	connection, ok := pipeline.Source.Properties["connection_name"]
+	connection, ok := pipelineMft.Source.Properties["connection_name"]
 	if ok {
 		arn, err := o.codestar.GetConnectionARN((connection).(string))
 		if err != nil {
 			return fmt.Errorf("get connection ARN: %w", err)
 		}
-		pipeline.Source.Properties["connection_arn"] = arn
+		pipelineMft.Source.Properties["connection_arn"] = arn
 	}
 
-	source, _, err := deploy.PipelineSourceFromManifest(pipeline.Source)
+	source, _, err := deploy.PipelineSourceFromManifest(pipelineMft.Source)
 	if err != nil {
 		return fmt.Errorf("read source from manifest: %w", err)
 	}
-	//o.shouldPromptUpdateConnection = shouldPrompt
-
-	// Convert full manifest path to relative path from workspace root.
 
 	pipelines, err := o.ws.ListPipelines()
 
@@ -161,7 +154,7 @@ func (o *packagePipelineOpts) Execute() error {
 	}
 
 	//Convert environments to deployment stages.
-	stages, err := o.convertStages(pipeline.Stages)
+	stages, err := o.convertStages(pipelineMft.Stages)
 	if err != nil {
 		return fmt.Errorf("convert environments to deployment stage: %w", err)
 	}
@@ -178,13 +171,13 @@ func (o *packagePipelineOpts) Execute() error {
 		return fmt.Errorf("get cross-regional resources: %w", err)
 	}
 
-	isLegacy, err := o.isLegacy(pipeline.Name)
+	isLegacy, err := o.isLegacy(pipelineMft.Name)
 	if err != nil {
 		return err
 	}
 
 	var build deploy.Build
-	if err = build.Init(pipeline.Build, filepath.Dir(relPath)); err != nil {
+	if err = build.Init(pipelineMft.Build, filepath.Dir(relPath)); err != nil {
 		return err
 	}
 
@@ -223,7 +216,6 @@ func (o *packagePipelineOpts) Execute() error {
 }
 
 func (o *packagePipelineOpts) getPipelineMft() (*manifest.Pipeline, error) {
-
 	pipelines, err := o.ws.ListPipelines()
 
 	pipeline_path := ""
@@ -258,9 +250,6 @@ func (o *packagePipelineOpts) isLegacy(inputName string) (bool, error) {
 	}
 	for _, pipeline := range pipelines {
 		if pipeline.ResourceName == inputName {
-			// NOTE: this is double insurance. A namespaced pipeline's `ResourceName` wouldn't be equal to
-			// `inputName` in the first place, because it would have been namespaced and have random string
-			// appended by CFN.
 			return pipeline.IsLegacy, nil
 		}
 	}
