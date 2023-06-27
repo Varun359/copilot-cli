@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ssm"
@@ -123,10 +122,6 @@ func newPackagePipelineOpts(vars packagePipelineVars) (*packagePipelineOpts, err
 }
 
 func (o *packagePipelineOpts) Execute() error {
-	_, file, no, ok := runtime.Caller(1)
-	if ok {
-		fmt.Printf("ths is in pipeline_package.go called from %s#%d\n", file, no)
-	}
 	// Read pipeline manifest.
 	pipeline, err := o.getPipelineMft()
 	if err != nil {
@@ -165,8 +160,6 @@ func (o *packagePipelineOpts) Execute() error {
 		return err
 	}
 
-	fmt.Println("The source and the relpath is ", source, relPath)
-
 	//Convert environments to deployment stages.
 	stages, err := o.convertStages(pipeline.Stages)
 	if err != nil {
@@ -195,7 +188,6 @@ func (o *packagePipelineOpts) Execute() error {
 		return err
 	}
 
-	fmt.Println("The session provider for pipeline is", o.sessProvider)
 	ovrdr, err := clideploy.NewOverrider(o.ws.PipelineOverridesPath(o.name), o.appName, "", afero.NewOsFs(), o.sessProvider)
 	if err != nil {
 		return err
@@ -206,7 +198,6 @@ func (o *packagePipelineOpts) Execute() error {
 		overrider = new(override.Noop)
 	}
 
-	fmt.Println("The ovrdr in pipeline package is", ovrdr)
 	deployPipelineInput := &deploy.CreatePipelineInput{
 		AppName:             o.appName,
 		Name:                o.name,
@@ -219,11 +210,11 @@ func (o *packagePipelineOpts) Execute() error {
 		PermissionsBoundary: o.app.PermissionsBoundary,
 	}
 
-	tpl, err := o.pipelineStackConfig(deployPipelineInput).Template()
+	stCon := deploycfn.WrapWithTemplateOverrider(o.pipelineStackConfig(deployPipelineInput), ovrdr)
+	tpl, err := stCon.Template()
 	if err != nil {
-		return fmt.Errorf("generate the new template for diff: %w", err)
+		return fmt.Errorf("%w", err)
 	}
-
 	if _, err := o.tmplWriter.Write([]byte(tpl)); err != nil {
 		return err
 	}

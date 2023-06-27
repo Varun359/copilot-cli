@@ -22,9 +22,7 @@ type overridePipelineOpts struct {
 
 	// Interfaces to interact with dependencies.
 	ws       wsPipelineReader
-	fs       afero.Fs
 	wsPrompt wsPipelineSelector
-	//validateOrAskName func() error
 }
 
 func newOverridePipelineOpts(vars overrideVars) (*overridePipelineOpts, error) {
@@ -81,7 +79,6 @@ func (o *overridePipelineOpts) Ask() error {
 
 // Execute writes IaC override files to the local workspace.
 func (o *overridePipelineOpts) Execute() error {
-	fmt.Println("Hello I am Override command for the pipeline")
 	o.requiresEnv = false
 	o.overrideOpts.dir = func() string {
 		return o.ws.PipelineOverridesPath(o.name)
@@ -114,7 +111,6 @@ func (o *overridePipelineOpts) validatePipelineName() error {
 }
 
 func (o *overridePipelineOpts) askPipelineName() error {
-	fmt.Println("Hey I am inside askPipelineName() function")
 	pipeline, err := o.wsPrompt.WsPipeline("Which pipeline's resources would you like to override?", "")
 	fmt.Printf("The pipeline which you want to override is %v", pipeline.Name)
 	if err != nil {

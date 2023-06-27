@@ -88,11 +88,9 @@ func (o *overrideOpts) Validate() error {
 
 // Ask prompts for and validates any required flags.
 func (o *overrideOpts) Ask() error {
-	fmt.Println("I am in the ask of override.go")
 	if err := o.validateOrAskIaCTool(); err != nil {
 		return err
 	}
-	fmt.Printf("The tool which you want to use is in Ask() override.go fun %v", o.iacTool)
 	return o.askResourcesToOverride()
 }
 

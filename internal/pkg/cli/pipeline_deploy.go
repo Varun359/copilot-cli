@@ -290,7 +290,7 @@ func (o *deployPipelineOpts) Execute() error {
 	if o.showDiff {
 		tpl, err := stCon.Template()
 		if err != nil {
-			return fmt.Errorf("generate the new template for diff: %w", err)
+			return fmt.Errorf("%w", err)
 		}
 		if err = diff(o, tpl, o.diffWriter); err != nil {
 			var errHasDiff *errHasDiff
