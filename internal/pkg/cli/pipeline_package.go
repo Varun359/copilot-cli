@@ -1,3 +1,6 @@
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 package cli
 
 import (
@@ -13,14 +16,12 @@ import (
 	"github.com/aws/copilot-cli/internal/pkg/aws/identity"
 	rg "github.com/aws/copilot-cli/internal/pkg/aws/resourcegroups"
 	"github.com/aws/copilot-cli/internal/pkg/aws/sessions"
-	clideploy "github.com/aws/copilot-cli/internal/pkg/cli/deploy"
 	"github.com/aws/copilot-cli/internal/pkg/cli/list"
 	"github.com/aws/copilot-cli/internal/pkg/config"
 	"github.com/aws/copilot-cli/internal/pkg/deploy"
 	deploycfn "github.com/aws/copilot-cli/internal/pkg/deploy/cloudformation"
 	"github.com/aws/copilot-cli/internal/pkg/deploy/cloudformation/stack"
 	"github.com/aws/copilot-cli/internal/pkg/manifest"
-	"github.com/aws/copilot-cli/internal/pkg/override"
 	"github.com/aws/copilot-cli/internal/pkg/term/prompt"
 	"github.com/aws/copilot-cli/internal/pkg/term/selector"
 	"github.com/aws/copilot-cli/internal/pkg/workspace"
@@ -44,7 +45,6 @@ type packagePipelineOpts struct {
 	configureDeployedPipelineLister func() deployedPipelineLister
 	newSvcListCmd                   func(io.Writer, string) cmd
 	newJobListCmd                   func(io.Writer, string) cmd
-	sessProvider                    *sessions.Provider
 
 	//catched variables
 	pipelineMft *manifest.Pipeline
@@ -71,7 +71,6 @@ func newPackagePipelineOpts(vars packagePipelineVars) (*packagePipelineOpts, err
 		tmplWriter:          os.Stdout,
 		ws:                  ws,
 		store:               store,
-		sessProvider:        sessProvider,
 		pipelineStackConfig: func(in *deploy.CreatePipelineInput) pipelineStackConfig {
 			return stack.NewPipelineStackConfig(in)
 		},
@@ -111,20 +110,29 @@ func newPackagePipelineOpts(vars packagePipelineVars) (*packagePipelineOpts, err
 		jobBuffer: &bytes.Buffer{},
 	}
 	opts.configureDeployedPipelineLister = func() deployedPipelineLister {
-		// Initialize the client only after the appName is asked.
 		return deploy.NewPipelineStore(rg.New(defaultSession))
 	}
 	return opts, nil
 }
 
 func (o *packagePipelineOpts) Execute() error {
-	// Read pipeline manifest.
-	pipelineMft, err := o.getPipelineMft()
+	pipelines, err := o.ws.ListPipelines()
+	if err != nil {
+		return fmt.Errorf("list all pipelines in the workspace: %w", err)
+	}
+
+	pipelinePath := ""
+	for _, pipeline := range pipelines {
+		if pipeline.Name == o.name {
+			pipelinePath = pipeline.Path
+			break
+		}
+	}
+	pipelineMft, err := o.getPipelineMft(pipelinePath)
 	if err != nil {
 		return err
 	}
 
-	// If the source has an existing connection, get the correlating ConnectionARN.
 	connection, ok := pipelineMft.Source.Properties["connection_name"]
 	if ok {
 		arn, err := o.codestar.GetConnectionARN((connection).(string))
@@ -139,21 +147,11 @@ func (o *packagePipelineOpts) Execute() error {
 		return fmt.Errorf("read source from manifest: %w", err)
 	}
 
-	pipelines, err := o.ws.ListPipelines()
-
-	pipeline_path := ""
-	for _, pipeline := range pipelines {
-		if pipeline.Name == o.name {
-			pipeline_path = pipeline.Path
-			break
-		}
-	}
-	relPath, err := o.ws.Rel(pipeline_path)
+	relPath, err := o.ws.Rel(pipelinePath)
 	if err != nil {
-		return err
+		return fmt.Errorf("convert manifest path to relative path: %w", err)
 	}
 
-	//Convert environments to deployment stages.
 	stages, err := o.convertStages(pipelineMft.Stages)
 	if err != nil {
 		return fmt.Errorf("convert environments to deployment stage: %w", err)
@@ -165,7 +163,6 @@ func (o *packagePipelineOpts) Execute() error {
 	}
 	o.app = appConfig
 
-	// Get cross-regional resources.
 	artifactBuckets, err := o.getArtifactBuckets()
 	if err != nil {
 		return fmt.Errorf("get cross-regional resources: %w", err)
@@ -181,16 +178,6 @@ func (o *packagePipelineOpts) Execute() error {
 		return err
 	}
 
-	ovrdr, err := clideploy.NewOverrider(o.ws.PipelineOverridesPath(o.name), o.appName, "", afero.NewOsFs(), o.sessProvider)
-	if err != nil {
-		return err
-	}
-
-	overrider := ovrdr
-	if overrider == nil {
-		overrider = new(override.Noop)
-	}
-
 	deployPipelineInput := &deploy.CreatePipelineInput{
 		AppName:             o.appName,
 		Name:                o.name,
@@ -203,10 +190,9 @@ func (o *packagePipelineOpts) Execute() error {
 		PermissionsBoundary: o.app.PermissionsBoundary,
 	}
 
-	stCon := deploycfn.WrapWithTemplateOverrider(o.pipelineStackConfig(deployPipelineInput), ovrdr)
-	tpl, err := stCon.Template()
+	tpl, err := o.pipelineStackConfig(deployPipelineInput).Template()
 	if err != nil {
-		return fmt.Errorf("%w", err)
+		return fmt.Errorf("generate stack template: %w", err)
 	}
 	if _, err := o.tmplWriter.Write([]byte(tpl)); err != nil {
 		return err
@@ -215,22 +201,12 @@ func (o *packagePipelineOpts) Execute() error {
 	return nil
 }
 
-func (o *packagePipelineOpts) getPipelineMft() (*manifest.Pipeline, error) {
-	pipelines, err := o.ws.ListPipelines()
-
-	pipeline_path := ""
-	for _, pipeline := range pipelines {
-		if pipeline.Name == o.name {
-			pipeline_path = pipeline.Path
-			break
-		}
-	}
+func (o *packagePipelineOpts) getPipelineMft(pipelinePath string) (*manifest.Pipeline, error) {
 	if o.pipelineMft != nil {
 		return o.pipelineMft, nil
 	}
 
-	fmt.Println("The pipeline path is ", pipeline_path)
-	pipelineMft, err := o.ws.ReadPipelineManifest(pipeline_path)
+	pipelineMft, err := o.ws.ReadPipelineManifest(pipelinePath)
 	if err != nil {
 		return nil, fmt.Errorf("read pipeline manifest: %w", err)
 	}

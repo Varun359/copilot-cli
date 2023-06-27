@@ -1,3 +1,6 @@
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 package cli
 
 import (
@@ -5,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 	"testing"
 
 	"github.com/aws/copilot-cli/internal/pkg/cli/mocks"
@@ -13,33 +15,35 @@ import (
 	"github.com/aws/copilot-cli/internal/pkg/deploy"
 	"github.com/aws/copilot-cli/internal/pkg/deploy/cloudformation/stack"
 	"github.com/aws/copilot-cli/internal/pkg/manifest"
-	"github.com/aws/copilot-cli/internal/pkg/term/log"
 	"github.com/aws/copilot-cli/internal/pkg/workspace"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
 )
 
 type packagePipelineMocks struct {
-	store               *mocks.Mockstore
-	prompt              *mocks.Mockprompter
-	prog                *mocks.Mockprogress
-	deployer            *mocks.MockpipelineDeployer
-	pipelineStackConfig *mocks.MockpipelineStackConfig
-	mockDiffWriter      *strings.Builder
-	ws                  *mocks.MockwsPipelineReader
-	actionCmd           *mocks.MockactionCommand
+	store                  *mocks.Mockstore
+	prompt                 *mocks.Mockprompter
+	prog                   *mocks.Mockprogress
+	deployer               *mocks.MockpipelineDeployer
+	pipelineStackConfig    *mocks.MockpipelineStackConfig
+	ws                     *mocks.MockwsPipelineReader
+	actionCmd              *mocks.MockactionCommand
+	deployedPipelineLister *mocks.MockdeployedPipelineLister
 }
 
-func TestOverridePipelineOpts_Execute(t *testing.T) {
+func TestPipelinePackageOpts_Execute(t *testing.T) {
 	const (
-		appName              = "badgoose"
-		region               = "us-west-2"
-		accountID            = "123456789012"
-		pipelineName         = "pipepiper"
-		badPipelineName      = "pipeline-badgoose-honkpipes"
-		pipelineManifestPath = "someStuff/someMoreStuff/aws-copilot-sample-service/copilot/pipelines/pipepiper/manifest.yml"
-		relativePath         = "/copilot/pipelines/pipepiper/manifest.yml"
+		appName         = "badgoose"
+		region          = "us-west-2"
+		accountID       = "123456789012"
+		pipelineName    = "pipepiper"
+		badPipelineName = "pipeline-badgoose-honkpipes"
+		relativePath    = "/copilot/pipelines/pipepiper/manifest.yml"
 	)
+	pipeline := workspace.PipelineManifest{
+		Name: pipelineName,
+		Path: "copilot/pipeline.yml",
+	}
 	mockPipelineManifest := &manifest.Pipeline{
 		Name:    "pipepiper",
 		Version: 1,
@@ -87,56 +91,38 @@ func TestOverridePipelineOpts_Execute(t *testing.T) {
 		inPipelineName string
 		inRegion       string
 		inPipelineFile string
-		callMocks      func(m deployPipelineMocks)
+		callMocks      func(m packagePipelineMocks)
 		expectedError  error
-		inShowDiff     bool
 	}{
-		"returns an error if fail to add pipeline resources to app": {
-			inApp:     &app,
-			inRegion:  region,
-			inAppName: appName,
-			callMocks: func(m deployPipelineMocks) {
+
+		"returns an error if ie fails to get the list of pipelines": {
+			callMocks: func(m packagePipelineMocks) {
 				gomock.InOrder(
-					m.prog.EXPECT().Start(fmt.Sprintf(fmtPipelineDeployResourcesStart, appName)).Times(1),
-					m.deployer.EXPECT().AddPipelineResourcesToApp(&app, region).Return(errors.New("some error")),
-					m.prog.EXPECT().Stop(log.Serrorf(fmtPipelineDeployResourcesFailed, appName)).Times(1),
+					m.ws.EXPECT().ListPipelines().Return(nil, errors.New("some error")),
 				)
 			},
-			expectedError: fmt.Errorf("add pipeline resources to application %s in %s: some error", appName, region),
+			expectedError: fmt.Errorf("list all pipelines in the workspace: some error"),
 		},
 		"returns an error if fail to read pipeline file": {
-			inApp:     &app,
-			inRegion:  region,
-			inAppName: appName,
-			callMocks: func(m deployPipelineMocks) {
+			callMocks: func(m packagePipelineMocks) {
 				gomock.InOrder(
-					m.prog.EXPECT().Start(fmt.Sprintf(fmtPipelineDeployResourcesStart, appName)).Times(1),
-					m.deployer.EXPECT().AddPipelineResourcesToApp(&app, region).Return(nil),
-					m.prog.EXPECT().Stop(log.Ssuccessf(fmtPipelineDeployResourcesComplete, appName)).Times(1),
-					m.ws.EXPECT().ReadPipelineManifest(pipelineManifestPath).Return(mockPipelineManifest, errors.New("some error")),
+					m.ws.EXPECT().ListPipelines().Return([]workspace.PipelineManifest{pipeline}, nil),
+					m.ws.EXPECT().ReadPipelineManifest("").Return(mockPipelineManifest, errors.New("some error")),
 				)
 			},
 			expectedError: fmt.Errorf("read pipeline manifest: some error"),
 		},
 		"returns an error if unable to unmarshal pipeline file": {
-			inApp:     &app,
-			inRegion:  region,
-			inAppName: appName,
-			callMocks: func(m deployPipelineMocks) {
+			callMocks: func(m packagePipelineMocks) {
 				gomock.InOrder(
-					m.prog.EXPECT().Start(fmt.Sprintf(fmtPipelineDeployResourcesStart, appName)).Times(1),
-					m.deployer.EXPECT().AddPipelineResourcesToApp(&app, region).Return(nil),
-					m.prog.EXPECT().Stop(log.Ssuccessf(fmtPipelineDeployResourcesComplete, appName)).Times(1),
-					m.ws.EXPECT().ReadPipelineManifest(pipelineManifestPath).Return(nil, errors.New("some error")),
+					m.ws.EXPECT().ListPipelines().Return([]workspace.PipelineManifest{pipeline}, nil),
+					m.ws.EXPECT().ReadPipelineManifest("").Return(nil, errors.New("some error")),
 				)
 			},
 			expectedError: fmt.Errorf("read pipeline manifest: some error"),
 		},
 		"returns an error if pipeline name fails validation": {
-			inApp:     &app,
-			inAppName: appName,
-			inRegion:  region,
-			callMocks: func(m deployPipelineMocks) {
+			callMocks: func(m packagePipelineMocks) {
 				mockBadPipelineManifest := &manifest.Pipeline{
 					Name:    "12345678101234567820123456783012345678401234567850123456786012345678701234567880123456789012345671001",
 					Version: 1,
@@ -149,19 +135,14 @@ func TestOverridePipelineOpts_Execute(t *testing.T) {
 					},
 				}
 				gomock.InOrder(
-					m.prog.EXPECT().Start(fmt.Sprintf(fmtPipelineDeployResourcesStart, appName)).Times(1),
-					m.deployer.EXPECT().AddPipelineResourcesToApp(&app, region).Return(nil),
-					m.prog.EXPECT().Stop(log.Ssuccessf(fmtPipelineDeployResourcesComplete, appName)).Times(1),
-					m.ws.EXPECT().ReadPipelineManifest(pipelineManifestPath).Return(mockBadPipelineManifest, nil),
+					m.ws.EXPECT().ListPipelines().Return([]workspace.PipelineManifest{pipeline}, nil),
+					m.ws.EXPECT().ReadPipelineManifest("").Return(mockBadPipelineManifest, nil),
 				)
 			},
 			expectedError: fmt.Errorf("validate pipeline manifest: pipeline name '12345678101234567820123456783012345678401234567850123456786012345678701234567880123456789012345671001' must be shorter than 100 characters"),
 		},
 		"returns an error if provider is not a supported type": {
-			inApp:     &app,
-			inAppName: appName,
-			inRegion:  region,
-			callMocks: func(m deployPipelineMocks) {
+			callMocks: func(m packagePipelineMocks) {
 				mockBadPipelineManifest := &manifest.Pipeline{
 					Name:    badPipelineName,
 					Version: 1,
@@ -175,46 +156,71 @@ func TestOverridePipelineOpts_Execute(t *testing.T) {
 					},
 				}
 				gomock.InOrder(
-					m.prog.EXPECT().Start(fmt.Sprintf(fmtPipelineDeployResourcesStart, appName)).Times(1),
-					m.deployer.EXPECT().AddPipelineResourcesToApp(&app, region).Return(nil),
-					m.prog.EXPECT().Stop(log.Ssuccessf(fmtPipelineDeployResourcesComplete, appName)).Times(1),
-					m.ws.EXPECT().ReadPipelineManifest(pipelineManifestPath).Return(mockBadPipelineManifest, nil),
+					m.ws.EXPECT().ListPipelines().Return([]workspace.PipelineManifest{pipeline}, nil),
+					m.ws.EXPECT().ReadPipelineManifest("").Return(mockBadPipelineManifest, nil),
 				)
 			},
 			expectedError: fmt.Errorf("read source from manifest: invalid repo source provider: NotGitHub"),
 		},
-		"returns an error if unable to convert environments to deployment stage": {
-			inApp:     &app,
-			inRegion:  region,
-			inAppName: appName,
-			callMocks: func(m deployPipelineMocks) {
+		"returns an error while converting manifest path to relative path from workspace root": {
+			callMocks: func(m packagePipelineMocks) {
 				gomock.InOrder(
-					m.prog.EXPECT().Start(fmt.Sprintf(fmtPipelineDeployResourcesStart, appName)).Times(1),
-					m.deployer.EXPECT().AddPipelineResourcesToApp(&app, region).Return(nil),
-					m.prog.EXPECT().Stop(log.Ssuccessf(fmtPipelineDeployResourcesComplete, appName)).Times(1),
-					m.ws.EXPECT().ReadPipelineManifest(pipelineManifestPath).Return(mockPipelineManifest, nil),
-					m.ws.EXPECT().Rel(pipelineManifestPath).Return(relativePath, nil),
+					m.ws.EXPECT().ListPipelines().Return([]workspace.PipelineManifest{pipeline}, nil),
+					m.ws.EXPECT().ReadPipelineManifest("").Return(mockPipelineManifest, nil),
+					m.ws.EXPECT().Rel("").Return("", errors.New("some error")),
+				)
+			},
+			expectedError: fmt.Errorf("convert manifest path to relative path: some error"),
+		},
+		"returns an error if unable to convert environments to deployment stage": {
+			callMocks: func(m packagePipelineMocks) {
+				gomock.InOrder(
+					m.ws.EXPECT().ListPipelines().Return([]workspace.PipelineManifest{pipeline}, nil),
+					m.ws.EXPECT().ReadPipelineManifest("").Return(mockPipelineManifest, nil),
+					m.ws.EXPECT().Rel("").Return(relativePath, nil),
 					m.actionCmd.EXPECT().Execute().Return(errors.New("some error")),
 				)
 			},
 			expectedError: fmt.Errorf("convert environments to deployment stage: get local services: some error"),
 		},
-		"returns an error if fails to get cross-regional resources": {
+		"returns an error if fails to fetch an application": {
 			inApp:     &app,
 			inRegion:  region,
 			inAppName: appName,
-			callMocks: func(m deployPipelineMocks) {
+			callMocks: func(m packagePipelineMocks) {
 				gomock.InOrder(
-					m.prog.EXPECT().Start(fmt.Sprintf(fmtPipelineDeployResourcesStart, appName)).Times(1),
-					m.deployer.EXPECT().AddPipelineResourcesToApp(&app, region).Return(nil),
-					m.prog.EXPECT().Stop(log.Ssuccessf(fmtPipelineDeployResourcesComplete, appName)).Times(1),
-					m.ws.EXPECT().ReadPipelineManifest(pipelineManifestPath).Return(mockPipelineManifest, nil),
-					m.ws.EXPECT().Rel(pipelineManifestPath).Return(relativePath, nil),
+					m.ws.EXPECT().ListPipelines().Return([]workspace.PipelineManifest{pipeline}, nil),
+					m.ws.EXPECT().ReadPipelineManifest("").Return(mockPipelineManifest, nil),
+					m.ws.EXPECT().Rel("").Return(relativePath, nil),
 					m.actionCmd.EXPECT().Execute().Times(2),
 
 					// convertStages
 					m.store.EXPECT().GetEnvironment(appName, "chicken").Return(mockEnv, nil).Times(1),
 					m.store.EXPECT().GetEnvironment(appName, "wings").Return(mockEnv, nil).Times(1),
+
+					m.store.EXPECT().GetApplication(appName).Return(nil, errors.New("some error")),
+				)
+			},
+			expectedError: fmt.Errorf("get application %v configuration: some error", appName),
+		},
+		"returns an error if fails to get cross-regional resources": {
+			inApp:     &app,
+			inRegion:  region,
+			inAppName: appName,
+			callMocks: func(m packagePipelineMocks) {
+				gomock.InOrder(
+					m.ws.EXPECT().ListPipelines().Return([]workspace.PipelineManifest{pipeline}, nil),
+					m.ws.EXPECT().ReadPipelineManifest("").Return(mockPipelineManifest, nil),
+					m.ws.EXPECT().Rel("").Return(relativePath, nil),
+					m.actionCmd.EXPECT().Execute().Times(2),
+
+					// convertStages
+					m.store.EXPECT().GetEnvironment(appName, "chicken").Return(mockEnv, nil).Times(1),
+					m.store.EXPECT().GetEnvironment(appName, "wings").Return(mockEnv, nil).Times(1),
+
+					m.store.EXPECT().GetApplication(appName).Return(&config.Application{
+						Name: appName,
+					}, nil),
 
 					// getArtifactBuckets
 					m.deployer.EXPECT().GetRegionalAppResources(gomock.Any()).Return(mockResources, errors.New("some error")),
@@ -223,29 +229,29 @@ func TestOverridePipelineOpts_Execute(t *testing.T) {
 			expectedError: fmt.Errorf("get cross-regional resources: some error"),
 		},
 		"error if failed to generate the template": {
-			inApp:      &app,
-			inAppName:  appName,
-			inRegion:   region,
-			inShowDiff: true,
-			callMocks: func(m deployPipelineMocks) {
+			inApp:     &app,
+			inAppName: appName,
+			inRegion:  region,
+			callMocks: func(m packagePipelineMocks) {
 				gomock.InOrder(
-					m.prog.EXPECT().Start(fmt.Sprintf(fmtPipelineDeployResourcesStart, appName)).Times(1),
-					m.deployer.EXPECT().AddPipelineResourcesToApp(&app, region).Return(nil),
-					m.prog.EXPECT().Stop(log.Ssuccessf(fmtPipelineDeployResourcesComplete, appName)).Times(1),
-					m.ws.EXPECT().ReadPipelineManifest(pipelineManifestPath).Return(mockPipelineManifest, nil),
-					m.ws.EXPECT().Rel(pipelineManifestPath).Return(relativePath, nil),
+					m.ws.EXPECT().ListPipelines().Return([]workspace.PipelineManifest{pipeline}, nil),
+					m.ws.EXPECT().ReadPipelineManifest("").Return(mockPipelineManifest, nil),
+					m.ws.EXPECT().Rel("").Return(relativePath, nil),
 					m.actionCmd.EXPECT().Execute().Times(2),
 
 					// convertStages
 					m.store.EXPECT().GetEnvironment(appName, "chicken").Return(mockEnv, nil).Times(1),
 					m.store.EXPECT().GetEnvironment(appName, "wings").Return(mockEnv, nil).Times(1),
 
+					m.store.EXPECT().GetApplication(appName).Return(&config.Application{
+						Name: appName,
+					}, nil),
+
 					// getArtifactBuckets
 					m.deployer.EXPECT().GetRegionalAppResources(gomock.Any()).Return(mockResources, nil),
 
 					// check if the pipeline has been deployed using a legacy naming.
 					m.deployedPipelineLister.EXPECT().ListDeployedPipelines(appName).Return([]deploy.Pipeline{}, nil),
-					m.ws.EXPECT().PipelineOverridesPath(pipelineName).Return("path"),
 					m.pipelineStackConfig.EXPECT().Template().Return("", errors.New("some error")),
 				)
 
@@ -267,7 +273,7 @@ func TestOverridePipelineOpts_Execute(t *testing.T) {
 			mockActionCmd := mocks.NewMockactionCommand(ctrl)
 			mockPipelineStackConfig := mocks.NewMockpipelineStackConfig(ctrl)
 
-			mocks := deployPipelineMocks{
+			mocks := packagePipelineMocks{
 				store:                  mockStore,
 				prompt:                 mockPrompt,
 				prog:                   mockProgress,
@@ -280,23 +286,18 @@ func TestOverridePipelineOpts_Execute(t *testing.T) {
 
 			tc.callMocks(mocks)
 
-			opts := &deployPipelineOpts{
-				deployPipelineVars: deployPipelineVars{
-					appName:  tc.inAppName,
-					name:     tc.inPipelineName,
-					showDiff: tc.inShowDiff,
+			opts := &packagePipelineOpts{
+				packagePipelineVars: packagePipelineVars{
+					appName: tc.inAppName,
+					name:    tc.inPipelineName,
 				},
 				pipelineDeployer: mockPipelineDeployer,
 				pipelineStackConfig: func(in *deploy.CreatePipelineInput) pipelineStackConfig {
 					return mockPipelineStackConfig
 				},
-				ws:         mockWorkspace,
-				app:        tc.inApp,
-				region:     tc.inRegion,
-				store:      mockStore,
-				prog:       mockProgress,
-				prompt:     mockPrompt,
-				diffWriter: &strings.Builder{},
+				ws:    mockWorkspace,
+				app:   tc.inApp,
+				store: mockStore,
 				newSvcListCmd: func(w io.Writer, app string) cmd {
 					return mockActionCmd
 				},
@@ -305,10 +306,6 @@ func TestOverridePipelineOpts_Execute(t *testing.T) {
 				},
 				configureDeployedPipelineLister: func() deployedPipelineLister {
 					return mocks.deployedPipelineLister
-				},
-				pipeline: &workspace.PipelineManifest{
-					Name: "pipepiper",
-					Path: pipelineManifestPath,
 				},
 				svcBuffer: bytes.NewBufferString(`{"services":[{"app":"badgoose","name":"frontend","type":""}]}`),
 				jobBuffer: bytes.NewBufferString(`{"jobs":[{"app":"badgoose","name":"backend","type":""}]}`),
