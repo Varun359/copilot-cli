@@ -33,6 +33,10 @@ type Manifest struct {
 	Image struct {
 		Build string `yaml:"build"`
 	} `yaml:"image"`
+
+	Sidecars map[string]struct {
+		Build string `yaml:"build"`
+	} `yaml:"sidecars"`
 }
 
 type localRunVars struct {
@@ -43,7 +47,6 @@ type localRunVars struct {
 
 type localRunOpts struct {
 	localRunVars
-	//ecsServiceDescriber
 
 	store          store
 	ws             wsWlDirReader
@@ -111,11 +114,7 @@ func (o *localRunOpts) Ask() error {
 }
 
 func (o *localRunOpts) Execute() error {
-	fmt.Printf("The app name that you want to run locally is %v\n", o.appName)
-	fmt.Printf("The env name that you want to run locally is %v\n", o.envName)
-	fmt.Printf("The svc name that you want to run locally is %v\n", o.name)
-
-	//Stage 1: Get the build info
+	//Stage 1: Get the build info - incomplete
 	raw, err := o.ws.ReadWorkloadManifest(o.name)
 	if err != nil {
 		return fmt.Errorf("read manifest file for %s: %w", o.name, err)
@@ -129,10 +128,24 @@ func (o *localRunOpts) Execute() error {
 	if err != nil {
 		fmt.Printf("Failed to unmarshal manifest :%v\n", err)
 	}
+
+	fmt.Println("***This is how unmarshaled manifest looks like", manifest)
 	imageBuild := manifest.Image.Build
 	fmt.Printf("The image is %v", imageBuild)
 
-	//Stage 2: Get the task definition
+	//Get the sidecar builds
+	sideCarBuilds := make(map[string]string)
+
+	for sideCarName, sidecar := range manifest.Sidecars {
+		sideCarBuilds[sideCarName] = sidecar.Build
+	}
+
+	fmt.Println("\nSidecar builds")
+	for sidecarName, build := range sideCarBuilds {
+		fmt.Printf("%s : %s\n", sidecarName, build)
+	}
+
+	//Stage 2: Get the task definition - complete
 	taskdef, err := o.ecsLocalClient.TaskDefinition(o.appName, o.envName, o.name)
 	if err != nil {
 		return fmt.Errorf("get task definition: %w", err)
@@ -140,6 +153,19 @@ func (o *localRunOpts) Execute() error {
 
 	fmt.Println("*********************Task Definition*********************", taskdef)
 
+	//Stage 3: Get the creds for current user - wrong!!!!!
+	getCreds, err := o.getCreds()
+	if err != nil {
+		return err
+	}
+
+	sess, err := getCreds.GetCurrentSession(ChooseCredPrompt, credsHelpPrompt)
+	if err != nil {
+		return fmt.Errorf("select creds: %w", err)
+	}
+	o.sess = sess
+
+	// stage 4: Decrypt the secrets. - incomplete (also should get the secrets from the secrets manager)
 	fmt.Println("The secrets from the task definition are", taskdef.Secrets())
 
 	awsSession := session.Must(session.NewSessionWithOptions(
@@ -164,17 +190,6 @@ func (o *localRunOpts) Execute() error {
 		secretValue := *resp.Parameter.Value
 		fmt.Println("The secret name and the value is", secretName, secretValue)
 	}
-	//Stage 3: Get the creds for current user
-	getCreds, err := o.getCreds()
-	if err != nil {
-		return err
-	}
-
-	sess, err := getCreds.GetCurrentSession(ChooseCredPrompt, credsHelpPrompt)
-	if err != nil {
-		return fmt.Errorf("select creds: %w", err)
-	}
-	o.sess = sess
 
 	return nil
 }
