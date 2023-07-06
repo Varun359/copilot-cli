@@ -562,6 +562,7 @@ type ec2Selector interface {
 
 type credsSelector interface {
 	Creds(prompt, help string) (*session.Session, error)
+	GetCurrentSession(prompt, help string) (*session.Session, error)
 }
 
 type ec2Client interface {

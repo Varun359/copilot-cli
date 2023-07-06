@@ -6243,6 +6243,21 @@ func (mr *MockcredsSelectorMockRecorder) Creds(prompt, help interface{}) *gomock
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Creds", reflect.TypeOf((*MockcredsSelector)(nil).Creds), prompt, help)
 }
 
+// GetCurrentSession mocks base method.
+func (m *MockcredsSelector) GetCurrentSession(prompt, help string) (*session.Session, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetCurrentSession", prompt, help)
+	ret0, _ := ret[0].(*session.Session)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetCurrentSession indicates an expected call of GetCurrentSession.
+func (mr *MockcredsSelectorMockRecorder) GetCurrentSession(prompt, help interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetCurrentSession", reflect.TypeOf((*MockcredsSelector)(nil).GetCurrentSession), prompt, help)
+}
+
 // Mockec2Client is a mock of ec2Client interface.
 type Mockec2Client struct {
 	ctrl     *gomock.Controller
