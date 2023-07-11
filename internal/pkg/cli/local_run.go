@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/secretsmanager"
 	"github.com/aws/aws-sdk-go/service/ssm"
 	awsecs "github.com/aws/copilot-cli/internal/pkg/aws/ecs"
 	"github.com/aws/copilot-cli/internal/pkg/aws/identity"
@@ -12,6 +14,7 @@ import (
 	"github.com/aws/copilot-cli/internal/pkg/aws/sessions"
 	"github.com/aws/copilot-cli/internal/pkg/config"
 	"github.com/aws/copilot-cli/internal/pkg/ecs"
+	"github.com/aws/copilot-cli/internal/pkg/manifest"
 	"github.com/aws/copilot-cli/internal/pkg/term/prompt"
 	"github.com/aws/copilot-cli/internal/pkg/term/selector"
 	"github.com/aws/copilot-cli/internal/pkg/workspace"
@@ -30,13 +33,24 @@ type ecsLocalClient interface {
 }
 
 type Manifest struct {
-	Image struct {
-		Build string `yaml:"build"`
-	} `yaml:"image"`
+	Image    manifest.Image                     `yaml:"image"`
+	Sidecars map[string]*manifest.SidecarConfig `yaml:"sidecars"`
+	Build    manifest.BuildArgsOrString         `yaml:"build"`
+}
 
-	Sidecars map[string]struct {
-		Build string `yaml:"build"`
-	} `yaml:"sidecars"`
+//	type Manifest interface {
+//		GetImage() *manifest.Image
+//		GetSideCars() map[string]*manifest.SidecarConfig
+//		GetFileUploads() []manifest.FileUpload
+//		GetPort() int
+//	}
+type Secret struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Engine   string `json:"engine"`
+	Host     string `json:"host"`
+	Port     string `json:"port"`
+	DBName   string `json:"dbname"`
 }
 
 type localRunVars struct {
@@ -56,7 +70,8 @@ type localRunOpts struct {
 
 	sess *session.Session
 
-	getCreds func() (credsSelector, error)
+	unmarshal func([]byte) (manifest.DynamicWorkload, error)
+	getCreds  func() (credsSelector, error)
 }
 
 func newLocalRunOpts(vars localRunVars) (*localRunOpts, error) {
@@ -71,14 +86,21 @@ func newLocalRunOpts(vars localRunVars) (*localRunOpts, error) {
 	if err != nil {
 		return nil, err
 	}
+	// configStore := config.NewSSMStore(identity.New(defaultSess), ssm.New(defaultSess), aws.StringValue(defaultSess.Config.Region))
+	// deployStore, err := deploy.NewStore(sessProvider, configStore)
+	// if err != nil {
+	// 	return nil, fmt.Errorf("connect to deploy store: %w", err)
+	// }
 	prompter := prompt.New()
 	ecsLocalClient := ecs.New(defaultSess)
 	opts := &localRunOpts{
 		localRunVars: vars,
 
+		sess:           defaultSess,
 		store:          store,
 		ws:             ws,
 		sel:            selector.NewLocalWorkloadSelector(prompter, store, ws),
+		unmarshal:      manifest.UnmarshalWorkload,
 		prompt:         prompter,
 		ecsLocalClient: ecsLocalClient,
 		getCreds: func() (credsSelector, error) {
@@ -121,29 +143,79 @@ func (o *localRunOpts) Execute() error {
 	}
 	fmt.Println("This is the manifest", string(raw))
 
+	am := manifest.Workload{}
+	if err := yaml.Unmarshal(raw, &am); err != nil {
+		return fmt.Errorf("unmarshal to workload manifest: %w", err)
+	}
+	typeVal := aws.StringValue(am.Type)
+	fmt.Println("TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTttttttttTT", typeVal)
+
 	//Unmarshal the raw manifest
+	//var manifest1 manifest.LoadBalancedWebService
+	// var manifest2 manifest.BackendService
+	// var manifest3 manifest.RequestDrivenWebService
+	// var manifest4 manifest.WorkerService
+	// var manifest5 manifest.StaticSite
+	// var manifest6 manifest.ScheduledJob
+
 	var manifest Manifest
 
+	//manifest = &manifest1
 	err = yaml.Unmarshal([]byte(string(raw)), &manifest)
 	if err != nil {
 		fmt.Printf("Failed to unmarshal manifest :%v\n", err)
 	}
-
 	fmt.Println("***This is how unmarshaled manifest looks like", manifest)
-	imageBuild := manifest.Image.Build
-	fmt.Printf("The image is %v", imageBuild)
+	// image := manifest.GetImage()
+
+	// imageString := *image.Build.BuildString
+
+	imageBuild := *&manifest.Image.Build.BuildArgs.Dockerfile
+	imageContext := *&manifest.Image.Build.BuildArgs.Context
+	imageArgs := *&manifest.Image.Build.BuildArgs.Args
+	imageTarget := *&manifest.Image.Build.BuildArgs.Target
+	imageCacheFrom := *&manifest.Image.Build.BuildArgs.CacheFrom
+
+	if imageBuild == nil {
+		imageBuild = manifest.Image.Build.BuildString
+	}
+	fmt.Printf("The image is %v\n", *imageBuild)
+	if imageContext != nil {
+		fmt.Printf("The imageContext is %v\n", *imageContext)
+	}
+	if imageArgs != nil {
+		fmt.Printf("The image args are %v\n", imageArgs)
+	}
+	if imageTarget != nil {
+		fmt.Printf("The imageTarget is %v\n", *imageTarget)
+	}
+	if imageCacheFrom != nil {
+		fmt.Printf("The imageCacheFrom is %v\n", imageCacheFrom)
+	}
 
 	//Get the sidecar builds
 	sideCarBuilds := make(map[string]string)
 
 	for sideCarName, sidecar := range manifest.Sidecars {
-		sideCarBuilds[sideCarName] = sidecar.Build
+		if uri, hasLocation := sidecar.ImageURI(); hasLocation {
+			sideCarBuilds[sideCarName] = uri
+			fmt.Println("Hey here", uri)
+		}
 	}
-
 	fmt.Println("\nSidecar builds")
 	for sidecarName, build := range sideCarBuilds {
 		fmt.Printf("%s : %s\n", sidecarName, build)
 	}
+
+	//Unmarshal the workload
+	// workload, err := manifest.UnmarshalWorkload([]byte(raw))
+
+	// if err != nil {
+	// 	return fmt.Errorf("Failed to unmarshal workload :%v\n", err)
+	// }
+
+	// mani := workload.Manifest()
+	// fmt.Println("This is the manifest", mani)
 
 	//Stage 2: Get the task definition - complete
 	taskdef, err := o.ecsLocalClient.TaskDefinition(o.appName, o.envName, o.name)
@@ -153,7 +225,14 @@ func (o *localRunOpts) Execute() error {
 
 	fmt.Println("*********************Task Definition*********************", taskdef)
 
-	//Stage 3: Get the creds for current user - wrong!!!!!
+	//Stage 3: Get the creds for current user - (seems to be wrong)!!!!!
+	configDetails, err := o.sess.Config.Credentials.Get()
+	fmt.Println("This is the acceskey of the default session is ", configDetails.AccessKeyID)
+	fmt.Println("This is the secretkey of the selected session ", configDetails.SecretAccessKey)
+	fmt.Println("This is the acceskey of the default session is ", configDetails.SessionToken)
+	fmt.Println("This is the provider name ", configDetails.ProviderName)
+	fmt.Println("This is the haskeys", configDetails.HasKeys())
+
 	getCreds, err := o.getCreds()
 	if err != nil {
 		return err
@@ -191,8 +270,43 @@ func (o *localRunOpts) Execute() error {
 		fmt.Println("The secret name and the value is", secretName, secretValue)
 	}
 
+	secretsManagerClient := secretsmanager.New(awsSession)
+	var secretStruct Secret
+	var secretsList []Secret
+	input := &secretsmanager.ListSecretsInput{}
+	err = secretsManagerClient.ListSecretsPages(input, func(page *secretsmanager.ListSecretsOutput, lastPage bool) bool {
+		for _, secret := range page.SecretList {
+			secretsString := secret.String()
+			fmt.Println("Secret Name:", secretsString)
+
+			secretName := *secret.Name
+			input1 := &secretsmanager.GetSecretValueInput{
+				SecretId:     aws.String(secretName),
+				VersionStage: aws.String("AWSCURRENT"),
+			}
+			result, _ := secretsManagerClient.GetSecretValue(input1)
+
+			secretValue := aws.StringValue(result.SecretString)
+
+			err = json.Unmarshal([]byte(secretValue), &secretStruct)
+
+			secretsList = append(secretsList, secretStruct)
+
+		}
+		return !lastPage
+	})
+
+	for _, secret := range secretsList {
+		fmt.Printf("secret string is %v", secret.Username)
+		fmt.Printf("secret string is %v", secret.Password)
+		fmt.Printf("secret string is %v", secret.Host)
+		fmt.Printf("secret string is %v", secret.DBName)
+		fmt.Printf("secret string is %v", secret.Port)
+		fmt.Printf("secret string is %v", secret.Engine)
+	}
 	return nil
 }
+
 func (o *localRunOpts) askEnvName() error {
 	if o.envName != "" {
 		return nil
