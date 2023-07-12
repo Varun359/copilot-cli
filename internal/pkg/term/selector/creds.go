@@ -67,35 +67,35 @@ func (s *CredsSelect) Creds(msg, help string) (*session.Session, error) {
 	return sess, nil
 }
 
-func (s *CredsSelect) GetCurrentSession(msg, help string) (*session.Session, error) {
-	profileFrom := make(map[string]string)
-	options := []string{tempCredsOption}
-	for _, name := range s.Profile.Names() {
-		fmt.Println("the profile name is", name)
-		pretty := fmt.Sprintf("[profile %s]", name)
-		options = append(options, pretty)
-		profileFrom[pretty] = name
-	}
+// func (s *CredsSelect) GetCurrentSession(msg, help string) (*session.Session, error) {
+// 	profileFrom := make(map[string]string)
+// 	options := []string{tempCredsOption}
+// 	for _, name := range s.Profile.Names() {
+// 		fmt.Println("the profile name is", name)
+// 		pretty := fmt.Sprintf("[profile %s]", name)
+// 		options = append(options, pretty)
+// 		profileFrom[pretty] = name
+// 	}
 
-	selected, err := s.Prompt.SelectOne(
-		msg,
-		help,
-		options,
-		prompt.WithFinalMessage("Credential source:"))
-	if err != nil {
-		return nil, fmt.Errorf("select credential source: %w", err)
-	}
+// 	selected, err := s.Prompt.SelectOne(
+// 		msg,
+// 		help,
+// 		options,
+// 		prompt.WithFinalMessage("Credential source:"))
+// 	if err != nil {
+// 		return nil, fmt.Errorf("select credential source: %w", err)
+// 	}
 
-	sess, err := s.Session.FromProfile(profileFrom[selected])
-	v, _ := sess.Config.Credentials.Get()
-	accessKey := v.AccessKeyID
-	secretKey := v.SecretAccessKey
-	secretToken := v.SessionToken
-	fmt.Println("This is the acceskey of the selected session", accessKey)
-	fmt.Println("This is the secretkey of the selected session", secretKey)
-	fmt.Println("This is the secretToken of the selected session", secretToken)
-	return sess, nil
-}
+// 	sess, err := s.Session.FromProfile(profileFrom[selected])
+// 	v, _ := sess.Config.Credentials.Get()
+// 	accessKey := v.AccessKeyID
+// 	secretKey := v.SecretAccessKey
+// 	secretToken := v.SessionToken
+// 	fmt.Println("This is the acceskey of the selected session", accessKey)
+// 	fmt.Println("This is the secretkey of the selected session", secretKey)
+// 	fmt.Println("This is the secretToken of the selected session", secretToken)
+// 	return sess, nil
+// }
 
 func (s *CredsSelect) askTempCreds() (*session.Session, error) {
 	defaultAccessKey, defaultSecretAccessKey, defaultSessToken := defaultCreds(s.Session)

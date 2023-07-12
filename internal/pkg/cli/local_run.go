@@ -10,7 +10,6 @@ import (
 	"github.com/aws/aws-sdk-go/service/ssm"
 	awsecs "github.com/aws/copilot-cli/internal/pkg/aws/ecs"
 	"github.com/aws/copilot-cli/internal/pkg/aws/identity"
-	"github.com/aws/copilot-cli/internal/pkg/aws/profile"
 	"github.com/aws/copilot-cli/internal/pkg/aws/sessions"
 	"github.com/aws/copilot-cli/internal/pkg/config"
 	"github.com/aws/copilot-cli/internal/pkg/ecs"
@@ -103,17 +102,17 @@ func newLocalRunOpts(vars localRunVars) (*localRunOpts, error) {
 		unmarshal:      manifest.UnmarshalWorkload,
 		prompt:         prompter,
 		ecsLocalClient: ecsLocalClient,
-		getCreds: func() (credsSelector, error) {
-			cfg, err := profile.NewConfig()
-			if err != nil {
-				return nil, fmt.Errorf("read named profiles: %w", err)
-			}
-			return &selector.CredsSelect{
-				Session: sessProvider,
-				Profile: cfg,
-				Prompt:  prompter,
-			}, nil
-		},
+		// getCreds: func() (credsSelector, error) {
+		// 	cfg, err := profile.NewConfig()
+		// 	if err != nil {
+		// 		return nil, fmt.Errorf("read named profiles: %w", err)
+		// 	}
+		// 	return &selector.CredsSelect{
+		// 		Session: sessProvider,
+		// 		Profile: cfg,
+		// 		Prompt:  prompter,
+		// 	}, nil
+		// },
 	}
 	return opts, nil
 }
@@ -143,6 +142,7 @@ func (o *localRunOpts) Execute() error {
 	}
 	fmt.Println("This is the manifest", string(raw))
 
+	// Checking the type of manifest here. Don't need???
 	am := manifest.Workload{}
 	if err := yaml.Unmarshal(raw, &am); err != nil {
 		return fmt.Errorf("unmarshal to workload manifest: %w", err)
@@ -226,23 +226,24 @@ func (o *localRunOpts) Execute() error {
 	fmt.Println("*********************Task Definition*********************", taskdef)
 
 	//Stage 3: Get the creds for current user - (seems to be wrong)!!!!!
-	configDetails, err := o.sess.Config.Credentials.Get()
+	configDetails, err := sessions.Creds(o.sess)
+	// configDetails, err := o.sess.Config.Credentials.Get()
 	fmt.Println("This is the acceskey of the default session is ", configDetails.AccessKeyID)
 	fmt.Println("This is the secretkey of the selected session ", configDetails.SecretAccessKey)
 	fmt.Println("This is the acceskey of the default session is ", configDetails.SessionToken)
 	fmt.Println("This is the provider name ", configDetails.ProviderName)
 	fmt.Println("This is the haskeys", configDetails.HasKeys())
 
-	getCreds, err := o.getCreds()
-	if err != nil {
-		return err
-	}
+	// getCreds, err := o.getCreds()
+	// if err != nil {
+	// 	return err
+	// }
 
-	sess, err := getCreds.GetCurrentSession(ChooseCredPrompt, credsHelpPrompt)
-	if err != nil {
-		return fmt.Errorf("select creds: %w", err)
-	}
-	o.sess = sess
+	// sess, err := getCreds.GetCurrentSession(ChooseCredPrompt, credsHelpPrompt)
+	// if err != nil {
+	// 	return fmt.Errorf("select creds: %w", err)
+	// }
+	// o.sess = sess
 
 	// stage 4: Decrypt the secrets. - incomplete (also should get the secrets from the secrets manager)
 	fmt.Println("The secrets from the task definition are", taskdef.Secrets())
