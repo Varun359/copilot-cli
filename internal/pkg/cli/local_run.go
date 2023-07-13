@@ -245,7 +245,7 @@ func (o *localRunOpts) Execute() error {
 	// }
 	// o.sess = sess
 
-	// stage 4: Decrypt the secrets. - incomplete (also should get the secrets from the secrets manager)
+	// stage 4: Decrypt the secrets. - complete as of now
 	fmt.Println("The secrets from the task definition are", taskdef.Secrets())
 
 	awsSession := session.Must(session.NewSessionWithOptions(
