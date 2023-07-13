@@ -4,15 +4,20 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/secretsmanager"
 	"github.com/aws/aws-sdk-go/service/ssm"
+	awsecs "github.com/aws/copilot-cli/internal/pkg/aws/ecs"
 	"github.com/aws/copilot-cli/internal/pkg/aws/identity"
 	"github.com/aws/copilot-cli/internal/pkg/aws/sessions"
 	"github.com/aws/copilot-cli/internal/pkg/config"
 	"github.com/aws/copilot-cli/internal/pkg/deploy"
 	"github.com/aws/copilot-cli/internal/pkg/describe"
+	"github.com/aws/copilot-cli/internal/pkg/ecs"
 	"github.com/aws/copilot-cli/internal/pkg/term/color"
 	"github.com/aws/copilot-cli/internal/pkg/term/log"
 	"github.com/aws/copilot-cli/internal/pkg/term/prompt"
@@ -21,6 +26,19 @@ import (
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
 )
+
+type ecsLocalClient interface {
+	TaskDefinition(app, env, svc string) (*awsecs.TaskDefinition, error)
+}
+
+type Secret struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Engine   string `json:"engine"`
+	Host     string `json:"host"`
+	Port     string `json:"port"`
+	DBName   string `json:"dbname"`
+}
 
 type localRunVars struct {
 	wkldName string
@@ -36,6 +54,7 @@ type localRunOpts struct {
 	store              store
 	ws                 wsWlDirReader
 	prompt             prompter
+	ecsLocalClient     ecsLocalClient
 	deployStore        deployedEnvironmentLister
 	envVersionGetter   func(string) (versionGetter, error)
 }
@@ -57,7 +76,7 @@ func newLocalRunOpts(vars localRunVars) (*localRunOpts, error) {
 	if err != nil {
 		return nil, err
 	}
-
+	ecsLocalClient := ecs.New(defaultSess)
 	opts := &localRunOpts{
 		localRunVars: vars,
 
@@ -66,6 +85,7 @@ func newLocalRunOpts(vars localRunVars) (*localRunOpts, error) {
 		prompt:             prompt.New(),
 		store:              store,
 		ws:                 ws,
+		ecsLocalClient:     ecsLocalClient,
 		deployStore:        deployStore,
 	}
 	opts.envVersionGetter = func(envName string) (versionGetter, error) {
@@ -103,7 +123,52 @@ func (o *localRunOpts) Ask() error {
 }
 
 func (o *localRunOpts) Execute() error {
-	//TODO(varun359): Get build information from the manifest and task definition for workloads
+	taskDef, err := o.ecsLocalClient.TaskDefinition(o.appName, o.envName, o.wkldName)
+	if err != nil {
+		return fmt.Errorf("get task definition: %w", err)
+	}
+
+	awsSession := session.Must(session.NewSessionWithOptions(
+		session.Options{
+			SharedConfigState: session.SharedConfigEnable,
+		}))
+	ssmClient := ssm.New(awsSession)
+
+	secrets := taskDef.Secrets()
+	for _, secret := range secrets {
+		secretValueFrom := secret.ValueFrom
+
+		_, err :=
+			ssmClient.GetParameter(&ssm.GetParameterInput{
+				Name:           aws.String(secretValueFrom),
+				WithDecryption: aws.Bool(true),
+			})
+		if err != nil {
+			return err
+		}
+	}
+
+	secretsManagerClient := secretsmanager.New(awsSession)
+	var secretStruct Secret
+	var secretsList []Secret
+	input := &secretsmanager.ListSecretsInput{}
+	err = secretsManagerClient.ListSecretsPages(input, func(page *secretsmanager.ListSecretsOutput, lastPage bool) bool {
+		for _, secret := range page.SecretList {
+			secretName := *secret.Name
+			in := &secretsmanager.GetSecretValueInput{
+				SecretId:     aws.String(secretName),
+				VersionStage: aws.String("AWSCURRENT"),
+			}
+			result, _ := secretsManagerClient.GetSecretValue(in)
+
+			secretValue := aws.StringValue(result.SecretString)
+
+			err = json.Unmarshal([]byte(secretValue), &secretStruct)
+
+			secretsList = append(secretsList, secretStruct)
+		}
+		return !lastPage
+	})
 
 	return nil
 }
