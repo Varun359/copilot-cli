@@ -6,6 +6,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -18,6 +19,7 @@ import (
 	"github.com/aws/copilot-cli/internal/pkg/deploy"
 	"github.com/aws/copilot-cli/internal/pkg/describe"
 	"github.com/aws/copilot-cli/internal/pkg/ecs"
+	"github.com/aws/copilot-cli/internal/pkg/manifest"
 	"github.com/aws/copilot-cli/internal/pkg/term/color"
 	"github.com/aws/copilot-cli/internal/pkg/term/log"
 	"github.com/aws/copilot-cli/internal/pkg/term/prompt"
@@ -25,6 +27,7 @@ import (
 	"github.com/aws/copilot-cli/internal/pkg/workspace"
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 type ecsLocalClient interface {
@@ -169,6 +172,50 @@ func (o *localRunOpts) Execute() error {
 		}
 		return !lastPage
 	})
+
+	//Get the build info here
+	raw, err := o.ws.ReadWorkloadManifest(o.wkldName)
+	if err != nil {
+		return fmt.Errorf("read manifest file for %s: %w", o.wkldName, err)
+	}
+
+	am := manifest.Workload{}
+	if err := yaml.Unmarshal(raw, &am); err != nil {
+		return fmt.Errorf("unmarshal to workload manifest: %w", err)
+	}
+	typeVal := aws.StringValue(am.Type)
+
+	dirPath, _ := filepath.Abs(".")
+
+	//should write a switch to get the build Args based on the type of the manifest
+	var manifest *manifest.WorkerService
+	if err := yaml.Unmarshal(raw, &manifest); err != nil {
+		return fmt.Errorf("unmarshal manifest for %s: %w", typeVal, err)
+	}
+	imageArgs, err := manifest.BuildArgs(dirPath)
+	fmt.Println("image args are", imageArgs)
+
+	// for _, image := range imageArgs {
+	// 	imageArgsDockerFile := *image.Dockerfile
+	// 	imageArgsArgs := image.Args
+	// 	imageArgsCache := image.CacheFrom
+	// 	imageArgsTarget := image.Target
+	// 	imageArgsContext := *image.Context
+	// }
+
+	//SideCar Images has the list of sidecar images
+	sideCarImages := make(map[string]string)
+
+	for sideCarName, sidecar := range manifest.Sidecars {
+		if uri, hasLocation := sidecar.ImageURI(); hasLocation {
+			sideCarImages[sideCarName] = uri
+			fmt.Println("Hey here", uri)
+		}
+	}
+	fmt.Println("\nSidecar Images")
+	for sidecarName, build := range sideCarImages {
+		fmt.Printf("%s : %s\n", sidecarName, build)
+	}
 
 	return nil
 }
