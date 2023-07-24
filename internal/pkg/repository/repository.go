@@ -55,6 +55,16 @@ func NewWithURI(registry Registry, name, uri string) *Repository {
 	}
 }
 
+// Build build the image from Dockerfile
+func (r *Repository) Build(ctx context.Context, args *dockerengine.BuildArguments, w io.Writer) (digest string, err error) {
+	//repoName := fmt.Sprintf("%s/%s", o.appName, o.wkldName)
+	//uri, _ := ecr.New(o.envSess).RepositoryURI(repoName)
+	if err := r.docker.Build(ctx, args, w); err != nil {
+		return "", fmt.Errorf("build Dockerfile at %s: %w", args.Dockerfile, err)
+	}
+	return digest, nil
+}
+
 // BuildAndPush builds the image from Dockerfile and pushes it to the repository with tags.
 func (r *Repository) BuildAndPush(ctx context.Context, args *dockerengine.BuildArguments, w io.Writer) (digest string, err error) {
 	if args.URI == "" {
@@ -68,7 +78,7 @@ func (r *Repository) BuildAndPush(ctx context.Context, args *dockerengine.BuildA
 		return "", fmt.Errorf("build Dockerfile at %s: %w", args.Dockerfile, err)
 	}
 
-	digest, err = r.docker.Push(ctx, args.URI, w, args.Tags...)
+	_, err = r.docker.Push(ctx, args.URI, w, args.Tags...)
 	if err != nil {
 		return "", fmt.Errorf("push to repo %s: %w", r.name, err)
 	}

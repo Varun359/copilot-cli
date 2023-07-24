@@ -4,30 +4,50 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
+	"io"
+	"runtime"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/secretsmanager"
 	"github.com/aws/aws-sdk-go/service/ssm"
+	"github.com/aws/copilot-cli/internal/pkg/aws/ecr"
 	awsecs "github.com/aws/copilot-cli/internal/pkg/aws/ecs"
 	"github.com/aws/copilot-cli/internal/pkg/aws/identity"
 	"github.com/aws/copilot-cli/internal/pkg/aws/sessions"
+	clideploy "github.com/aws/copilot-cli/internal/pkg/cli/deploy"
 	"github.com/aws/copilot-cli/internal/pkg/config"
 	"github.com/aws/copilot-cli/internal/pkg/deploy"
 	"github.com/aws/copilot-cli/internal/pkg/describe"
+	"github.com/aws/copilot-cli/internal/pkg/docker/dockerengine"
 	"github.com/aws/copilot-cli/internal/pkg/ecs"
+	"github.com/aws/copilot-cli/internal/pkg/exec"
 	"github.com/aws/copilot-cli/internal/pkg/manifest"
+	"github.com/aws/copilot-cli/internal/pkg/repository"
 	"github.com/aws/copilot-cli/internal/pkg/term/color"
 	"github.com/aws/copilot-cli/internal/pkg/term/log"
 	"github.com/aws/copilot-cli/internal/pkg/term/prompt"
 	"github.com/aws/copilot-cli/internal/pkg/version"
 	"github.com/aws/copilot-cli/internal/pkg/workspace"
+
+	//	"github.com/docker/docker/pkg/platform"
 	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
+	"golang.org/x/sync/errgroup"
+)
+
+type ContainerBuildAndRun interface {
+	Build(ctx context.Context, args *dockerengine.BuildArguments, w io.Writer) error
+	Run(ctx context.Context, options *dockerengine.Runoptions) error
+}
+
+const (
+	labelForBuilder       = "com.aws.copilot.image.builder"
+	labelForVersion       = "com.aws.copilot.image.version"
+	labelForContainerName = "com.aws.copilot.image.container.name"
 )
 
 type ecsLocalClient interface {
@@ -43,6 +63,12 @@ type Secret struct {
 	DBName   string `json:"dbname"`
 }
 
+type ImageInfo struct {
+	ContainerName string
+	ImageTag      string
+	ImageURI      string
+}
+
 type localRunVars struct {
 	wkldName string
 	appName  string
@@ -54,12 +80,21 @@ type localRunOpts struct {
 
 	deployedWkld       []string
 	wkldDeployedToEnvs map[string][]string
-	store              store
-	ws                 wsWlDirReader
-	prompt             prompter
-	ecsLocalClient     ecsLocalClient
-	deployStore        deployedEnvironmentLister
-	envVersionGetter   func(string) (versionGetter, error)
+	//gitShortCommit     string
+	//cmd              execRunner
+	store            store
+	ws               wsWlDirReader
+	image            clideploy.ContainerImageIdentifier
+	sessProvider     *sessions.Provider
+	prompt           prompter
+	repository       repositoryService
+	ecsLocalClient   ecsLocalClient
+	envSess          *session.Session
+	docker           ContainerBuildAndRun
+	deployStore      deployedEnvironmentLister
+	unmarshal        func([]byte) (manifest.DynamicWorkload, error)
+	newInterpolator  func(app, env string) interpolator
+	envVersionGetter func(string) (versionGetter, error)
 }
 
 func newLocalRunOpts(vars localRunVars) (*localRunOpts, error) {
@@ -80,16 +115,26 @@ func newLocalRunOpts(vars localRunVars) (*localRunOpts, error) {
 		return nil, err
 	}
 	ecsLocalClient := ecs.New(defaultSess)
+	repoName := clideploy.RepoName(vars.appName, vars.wkldName)
+	gitShortCommit := imageTagFromGit(exec.NewCmd())
 	opts := &localRunOpts{
 		localRunVars: vars,
 
 		deployedWkld:       []string{},
 		wkldDeployedToEnvs: make(map[string][]string),
+		unmarshal:          manifest.UnmarshalWorkload,
+		newInterpolator:    newManifestInterpolator,
 		prompt:             prompt.New(),
+		repository:         repository.New(ecr.New(defaultSess), repoName),
+		sessProvider:       sessProvider,
 		store:              store,
-		ws:                 ws,
-		ecsLocalClient:     ecsLocalClient,
-		deployStore:        deployStore,
+		docker:             dockerengine.New(exec.NewCmd()),
+		image: clideploy.ContainerImageIdentifier{
+			GitShortCommitTag: gitShortCommit,
+		},
+		ws:             ws,
+		ecsLocalClient: ecsLocalClient,
+		deployStore:    deployStore,
 	}
 	opts.envVersionGetter = func(envName string) (versionGetter, error) {
 		envDescriber, err := describe.NewEnvDescriber(describe.NewEnvDescriberConfig{
@@ -126,22 +171,32 @@ func (o *localRunOpts) Ask() error {
 }
 
 func (o *localRunOpts) Execute() error {
+	//get TaskDefinition, envVars and secrets
+	secrets := make(map[string]string)
+	envVars := make(map[string]string)
+	awsSession := session.Must(session.NewSessionWithOptions(
+		session.Options{
+			SharedConfigState: session.SharedConfigEnable,
+		}))
+
 	taskDef, err := o.ecsLocalClient.TaskDefinition(o.appName, o.envName, o.wkldName)
 	if err != nil {
 		return fmt.Errorf("get task definition: %w", err)
 	}
 
-	awsSession := session.Must(session.NewSessionWithOptions(
-		session.Options{
-			SharedConfigState: session.SharedConfigEnable,
-		}))
+	for _, containerDef := range taskDef.ContainerDefinitions {
+		for _, env := range containerDef.Environment {
+			envVars[*env.Name] = *env.Value
+		}
+	}
+
 	ssmClient := ssm.New(awsSession)
 
-	secrets := taskDef.Secrets()
-	for _, secret := range secrets {
+	taskDefSecrets := taskDef.Secrets()
+	for _, secret := range taskDefSecrets {
 		secretValueFrom := secret.ValueFrom
 
-		_, err :=
+		decryptedValue, err :=
 			ssmClient.GetParameter(&ssm.GetParameterInput{
 				Name:           aws.String(secretValueFrom),
 				WithDecryption: aws.Bool(true),
@@ -149,6 +204,9 @@ func (o *localRunOpts) Execute() error {
 		if err != nil {
 			return err
 		}
+		secrets[secret.Name] = *decryptedValue.Parameter.Value
+		fmt.Println("The secret Key is ", secret.Name)
+		fmt.Println("The secret value is ", *decryptedValue.Parameter.Value)
 	}
 
 	secretsManagerClient := secretsmanager.New(awsSession)
@@ -167,46 +225,114 @@ func (o *localRunOpts) Execute() error {
 			secretValue := aws.StringValue(result.SecretString)
 
 			err = json.Unmarshal([]byte(secretValue), &secretStruct)
-
+			secrets[secretStruct.Username] = secretStruct.Password
 			secretsList = append(secretsList, secretStruct)
 		}
 		return !lastPage
 	})
+	fmt.Println("These are the map of all secrets ", secrets)
 
 	//Get the build info here
-	raw, err := o.ws.ReadWorkloadManifest(o.wkldName)
+	env, err := o.store.GetEnvironment(o.appName, o.envName)
 	if err != nil {
-		return fmt.Errorf("read manifest file for %s: %w", o.wkldName, err)
+		return fmt.Errorf("get environment %s configuration: %w", o.envName, err)
 	}
-
-	am := manifest.Workload{}
-	if err := yaml.Unmarshal(raw, &am); err != nil {
-		return fmt.Errorf("unmarshal to workload manifest: %w", err)
+	fmt.Println("The env name is", env.Name)
+	envSess, err := o.sessProvider.FromRole(env.ManagerRoleARN, env.Region)
+	if err != nil {
+		return err
 	}
-	typeVal := aws.StringValue(am.Type)
+	o.envSess = envSess
+	mft, err := workloadManifest(&workloadManifestInput{
+		name:         o.wkldName,
+		appName:      o.appName,
+		envName:      o.envName,
+		interpolator: o.newInterpolator(o.appName, o.envName),
+		ws:           o.ws,
+		unmarshal:    o.unmarshal,
+		sess:         envSess,
+	})
 
-	dirPath, _ := filepath.Abs(".")
+	workspacePath := o.ws.Path()
+	manifestContent := mft.Manifest()
 
-	//should write a switch to get the build Args based on the type of the manifest
-	var manifest *manifest.WorkerService
-	if err := yaml.Unmarshal(raw, &manifest); err != nil {
-		return fmt.Errorf("unmarshal manifest for %s: %w", typeVal, err)
+	//dir, err := os.Getwd()
+	//fmt.Println("The dir is ", dir)
+	// groupName := strings.ToLower(filepath.Base(dir))
+	// fmt.Println("The groupName is", groupName)
+	//repoName := fmt.Sprintf(deploy.FmtTaskECRRepoName, groupName)
+	repoName := fmt.Sprintf("%s/%s", o.appName, o.wkldName)
+	uri, _ := ecr.New(o.envSess).RepositoryURI(repoName)
+	fmt.Println("The uri is ", uri)
+	// fmt.Println("the platform i am runnning in is runtime ", runtime.GOARCH)
+	switch t := manifestContent.(type) {
+	case *manifest.ScheduledJob:
+		scheduleJob := t
+		_ = getSideCarImages(scheduleJob.Sidecars)
+		buildArgsPerContainer, err := clideploy.BuildArgsPerContainer(o.wkldName, workspacePath, o.image, mft.Manifest())
+		if err != nil {
+			return err
+		}
+		fmt.Println("These are the build args per container ", buildArgsPerContainer)
+		imageInfoList, err := o.buildImages(buildArgsPerContainer, uri)
+
+		if err != nil {
+			return err
+		}
+		err = o.runImages(imageInfoList, secrets, envVars)
+	case *manifest.LoadBalancedWebService:
+		LoadBalancedWebService := t
+		_ = getSideCarImages(LoadBalancedWebService.Sidecars)
+		buildArgsPerContainer, err := clideploy.BuildArgsPerContainer(o.wkldName, workspacePath, o.image, mft.Manifest())
+		if err != nil {
+			return err
+		}
+		imageInfoList, err := o.buildImages(buildArgsPerContainer, uri)
+		if err != nil {
+			return err
+		}
+		err = o.runImages(imageInfoList, secrets, envVars)
+	case *manifest.WorkerService:
+		workerService := t
+		_ = getSideCarImages(workerService.Sidecars)
+		buildArgsPerContainer, err := clideploy.BuildArgsPerContainer(o.wkldName, workspacePath, o.image, mft.Manifest())
+		if err != nil {
+			return err
+		}
+		imageInfoList, err := o.buildImages(buildArgsPerContainer, uri)
+		if err != nil {
+			return err
+		}
+		err = o.runImages(imageInfoList, secrets, envVars)
+	case *manifest.BackendService:
+		backendService := t
+		_ = getSideCarImages(backendService.Sidecars)
+		buildArgsPerContainer, err := clideploy.BuildArgsPerContainer(o.wkldName, workspacePath, o.image, mft.Manifest())
+		if err != nil {
+			return err
+		}
+		imageInfoList, err := o.buildImages(buildArgsPerContainer, uri)
+		if err != nil {
+			return err
+		}
+		err = o.runImages(imageInfoList, secrets, envVars)
+	case *manifest.RequestDrivenWebService:
+		buildArgsPerContainer, err := clideploy.BuildArgsPerContainer(o.wkldName, workspacePath, o.image, mft.Manifest())
+		if err != nil {
+			return err
+		}
+		imageInfoList, err := o.buildImages(buildArgsPerContainer, uri)
+		if err != nil {
+			return err
+		}
+		err = o.runImages(imageInfoList, secrets, envVars)
 	}
-	imageArgs, err := manifest.BuildArgs(dirPath)
-	fmt.Println("image args are", imageArgs)
+	return nil
+}
 
-	// for _, image := range imageArgs {
-	// 	imageArgsDockerFile := *image.Dockerfile
-	// 	imageArgsArgs := image.Args
-	// 	imageArgsCache := image.CacheFrom
-	// 	imageArgsTarget := image.Target
-	// 	imageArgsContext := *image.Context
-	// }
-
-	//SideCar Images has the list of sidecar images
+func getSideCarImages(sidecars map[string]*manifest.SidecarConfig) map[string]string {
 	sideCarImages := make(map[string]string)
-
-	for sideCarName, sidecar := range manifest.Sidecars {
+	for sideCarName, sidecar := range sidecars {
 		if uri, hasLocation := sidecar.ImageURI(); hasLocation {
 			sideCarImages[sideCarName] = uri
 			fmt.Println("Hey here", uri)
@@ -216,7 +342,91 @@ func (o *localRunOpts) Execute() error {
 	for sidecarName, build := range sideCarImages {
 		fmt.Printf("%s : %s\n", sidecarName, build)
 	}
+	return sideCarImages
+}
 
+func (o *localRunOpts) buildImages(buildArgsPerContainer map[string]*dockerengine.BuildArguments, uri string) ([]ImageInfo, error) {
+	var imageInfoList []ImageInfo
+	var errGroup errgroup.Group
+
+	maxParallelBuilds := runtime.NumCPU()
+	// Create a buffered channel to control the number of parallel builds
+	parallelBuilds := make(chan struct{}, maxParallelBuilds)
+
+	// Iterate over the build arguments and perform parallel builds
+	for name, buildArgs := range buildArgsPerContainer {
+		name := name
+		buildArgs := buildArgs
+
+		// Acquire a token from the parallel builds channel
+		parallelBuilds <- struct{}{}
+
+		// Execute each build in a separate goroutine
+		errGroup.Go(func() error {
+			defer func() {
+				// Release the token back to the parallel builds channel
+				<-parallelBuilds
+			}()
+
+			buildArgs.URI = uri
+			_, err := buildArgs.GenerateDockerBuildArgs(dockerengine.New(exec.NewCmd()))
+			if err != nil {
+				return fmt.Errorf("generate docker build args for %q: %w", name, err)
+			}
+			fmt.Println("these are the tags ", buildArgs.Tags)
+			_, err = o.repository.Build(context.Background(), buildArgs, log.DiagnosticWriter)
+			if err != nil {
+				return fmt.Errorf("build image: %w", err)
+			}
+			//o.docker.Build(context.Background(), buildArgs, log.DiagnosticWriter)
+
+			imageInfo := ImageInfo{
+				ContainerName: name,
+				ImageTag:      buildArgs.Tags[0],
+				ImageURI:      buildArgs.URI,
+			}
+
+			// Append the image info to the list
+			imageInfoList = append(imageInfoList, imageInfo)
+
+			return nil
+		})
+	}
+
+	// Wait for all the builds to complete
+	if err := errGroup.Wait(); err != nil {
+		return nil, err
+	}
+
+	return imageInfoList, nil
+}
+
+func (o *localRunOpts) runImages(imageInfoList []ImageInfo, secrets map[string]string, envVars map[string]string) error {
+	var errGroup errgroup.Group
+
+	// Iterate over the image info list and perform parallel container runs
+	for _, imageInfo := range imageInfoList {
+		imageInfo := imageInfo
+
+		// Execute each container run in a separate goroutine
+		errGroup.Go(func() error {
+			runOptions := &dockerengine.Runoptions{
+				ImageURI:      imageInfo.ImageURI,
+				Tag:           imageInfo.ImageTag,
+				ContainerName: imageInfo.ContainerName,
+				Secrets:       secrets,
+				EnvVars:       envVars,
+			}
+			o.docker.Run(context.Background(), runOptions)
+
+			return nil
+		})
+	}
+
+	// Wait for all the container runs to complete
+	if err := errGroup.Wait(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -224,7 +434,6 @@ func (o *localRunOpts) validateOrAskEnvName() error {
 	if o.envName != "" {
 		return o.validateEnvName()
 	}
-
 	if len(o.wkldDeployedToEnvs[o.wkldName]) == 1 {
 		log.Infof("Only one environment found, defaulting to: %s\n", color.HighlightUserInput(o.wkldDeployedToEnvs[o.wkldName][0]))
 		o.envName = o.wkldDeployedToEnvs[o.wkldName][0]
@@ -240,12 +449,10 @@ func (o *localRunOpts) validateOrAskEnvName() error {
 
 func (o *localRunOpts) isEnvironmentDeployed(envName string) (bool, error) {
 	var checker versionGetter
-
 	checker, err := o.envVersionGetter(envName)
 	if err != nil {
 		return false, err
 	}
-
 	currVersion, err := checker.Version()
 	if err != nil {
 		return false, fmt.Errorf("get environment %q version: %w", envName, err)
@@ -281,7 +488,7 @@ func (o *localRunOpts) validateOrAskWorkloadName() error {
 
 	localWorkloads, err := o.ws.ListWorkloads()
 	if err != nil {
-		return fmt.Errorf("list workloads in the workspace %s : %w", o.appName, err)
+		return fmt.Errorf("list workloads in the workspace %s: %w", o.appName, err)
 	}
 	for _, wkld := range localWorkloads {
 		envs, err := o.deployStore.ListEnvironmentsDeployedTo(o.appName, wkld)
@@ -302,11 +509,11 @@ func (o *localRunOpts) validateOrAskWorkloadName() error {
 		o.wkldName = o.deployedWkld[0]
 		return nil
 	}
-	selectedWorloadName, err := o.prompt.SelectOne("Select a workload that you want to run locally", "", o.deployedWkld, prompt.WithFinalMessage("workload name"))
+	selectedWorkloadName, err := o.prompt.SelectOne("Select a workload that you want to run locally", "", o.deployedWkld, prompt.WithFinalMessage("Workload:"))
 	if err != nil {
-		return fmt.Errorf("select Workload: %w", err)
+		return fmt.Errorf("select a Workload: %w", err)
 	}
-	o.wkldName = selectedWorloadName
+	o.wkldName = selectedWorkloadName
 	return nil
 }
 

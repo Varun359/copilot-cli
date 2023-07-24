@@ -82,6 +82,7 @@ func (noopActionRecommender) RecommendedActions() []string {
 type repositoryService interface {
 	Login() (string, error)
 	BuildAndPush(ctx context.Context, args *dockerengine.BuildArguments, w io.Writer) (string, error)
+	Build(ctx context.Context, args *dockerengine.BuildArguments, w io.Writer) (string, error)
 }
 
 type templater interface {
@@ -174,6 +175,7 @@ type workloadDeployer struct {
 	mft           interface{}
 	rawMft        []byte
 	workspacePath string
+	repoName      string
 
 	// Dependencies.
 	fs                 afero.Fs
@@ -309,6 +311,7 @@ func newWorkloadDeployer(in *WorkloadDeployerInput) (*workloadDeployer, error) {
 		store:                    store,
 		envConfig:                envConfig,
 		labeledTermPrinter:       labeledTermPrinter,
+		repoName:                 repoName,
 
 		mft:    in.Mft,
 		rawMft: in.RawMft,
@@ -393,8 +396,24 @@ func (img ContainerImageIdentifier) Tag() string {
 }
 
 func (d *workloadDeployer) uploadContainerImages(out *UploadArtifactsOutput) error {
+	uri, err := d.repository.Login()
+	if err != nil {
+		return fmt.Errorf("login to image repository: %w", err)
+	}
+	return d.processContainerImages(out, d.repository.BuildAndPush, uri)
+}
+
+func (d *workloadDeployer) BuildContainerImages(out *UploadArtifactsOutput) error {
+	uri, err := ecr.New(d.defaultSessWithEnvRegion).RepositoryURI(d.repoName)
+	if err != nil {
+		return fmt.Errorf("get repository uri: %w", err)
+	}
+	return d.processContainerImages(out, d.repository.Build, uri)
+}
+
+func (d *workloadDeployer) processContainerImages(out *UploadArtifactsOutput, buildFunc func(ctx context.Context, args *dockerengine.BuildArguments, w io.Writer) (string, error), uri string) error {
 	// If it is built from local Dockerfile, build and push to the ECR repo.
-	buildArgsPerContainer, err := buildArgsPerContainer(d.name, d.workspacePath, d.image, d.mft)
+	buildArgsPerContainer, err := BuildArgsPerContainer(d.name, d.workspacePath, d.image, d.mft)
 	if err != nil {
 		return err
 	}
@@ -404,10 +423,10 @@ func (d *workloadDeployer) uploadContainerImages(out *UploadArtifactsOutput) err
 	if err := d.docker.CheckDockerEngineRunning(); err != nil {
 		return fmt.Errorf("check if docker engine is running: %w", err)
 	}
-	uri, err := d.repository.Login()
-	if err != nil {
-		return fmt.Errorf("login to image repository: %w", err)
-	}
+	// uri, err := d.repository.Login()
+	// if err != nil {
+	// 	return fmt.Errorf("login to image repository: %w", err)
+	// }
 
 	var digestsMu sync.Mutex
 	out.ImageDigests = make(map[string]ContainerImageIdentifier, len(buildArgsPerContainer))
@@ -430,7 +449,7 @@ func (d *workloadDeployer) uploadContainerImages(out *UploadArtifactsOutput) err
 		pr, pw := io.Pipe()
 		g.Go(func() error {
 			defer pw.Close()
-			digest, err := d.repository.BuildAndPush(ctx, buildArgs, pw)
+			digest, err := buildFunc(ctx, buildArgs, pw)
 			if err != nil {
 				return fmt.Errorf("build and push the image %q: %w", name, err)
 			}
@@ -474,7 +493,7 @@ func (d *workloadDeployer) uploadContainerImages(out *UploadArtifactsOutput) err
 	return nil
 }
 
-func buildArgsPerContainer(name, workspacePath string, img ContainerImageIdentifier, unmarshaledManifest interface{}) (map[string]*dockerengine.BuildArguments, error) {
+func BuildArgsPerContainer(name, workspacePath string, img ContainerImageIdentifier, unmarshaledManifest interface{}) (map[string]*dockerengine.BuildArguments, error) {
 	type dfArgs interface {
 		BuildArgs(rootDirectory string) (map[string]*manifest.DockerBuildArgs, error)
 		ContainerPlatform() string

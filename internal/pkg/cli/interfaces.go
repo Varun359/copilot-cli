@@ -6,10 +6,10 @@ package cli
 import (
 	"context"
 	"encoding"
-	sdkcloudformation "github.com/aws/aws-sdk-go/service/cloudformation"
 	"io"
 
 	"github.com/aws/aws-sdk-go/aws/session"
+	sdkcloudformation "github.com/aws/aws-sdk-go/service/cloudformation"
 	awscloudformation "github.com/aws/copilot-cli/internal/pkg/aws/cloudformation"
 	"github.com/aws/copilot-cli/internal/pkg/aws/codepipeline"
 	"github.com/aws/copilot-cli/internal/pkg/aws/ec2"
@@ -169,6 +169,7 @@ type secretDeleter interface {
 
 type imageBuilderPusher interface {
 	BuildAndPush(ctx context.Context, args *dockerengine.BuildArguments, w io.Writer) (string, error)
+	Build(ctx context.Context, args *dockerengine.BuildArguments, w io.Writer) (string, error)
 }
 
 type repositoryLogin interface {

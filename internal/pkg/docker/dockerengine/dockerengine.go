@@ -58,6 +58,15 @@ func New(cmd Cmd) DockerCmdClient {
 	}
 }
 
+// RunOptions holds the options for running a Docker container.
+type Runoptions struct {
+	ImageURI      string            // Required. The image name to run.
+	Tag           string            // Required. The tag of the image to run.
+	Secrets       map[string]string // Optional. Secrets to pass to the container as environment variables.
+	EnvVars       map[string]string //Optional. Environment variables to pass to the container.
+	ContainerName string            //Optional. The name for the container.
+}
+
 // BuildArguments holds the arguments that can be passed while building a container.
 type BuildArguments struct {
 	URI        string            // Required. Location of ECR Repo. Used to generate image name in conjunction with tag.
@@ -136,6 +145,8 @@ func (in *BuildArguments) GenerateDockerBuildArgs(c DockerCmdClient) ([]string, 
 	}
 
 	args = append(args, dfDir, "-f", in.Dockerfile)
+
+	fmt.Println("The args for the docker build command is", args)
 	return args, nil
 }
 
@@ -153,6 +164,39 @@ func (c DockerCmdClient) Build(ctx context.Context, in *BuildArguments, w io.Wri
 	if err := c.runner.RunWithContext(ctx, "docker", args, exec.Stdout(w), exec.Stderr(w)); err != nil {
 		return fmt.Errorf("building image: %w", err)
 	}
+	return nil
+}
+
+// Run runs a Docker container with the sepcified options.
+func (c DockerCmdClient) Run(ctx context.Context, options *Runoptions) error {
+	args := []string{"run"}
+
+	//Add container name option.
+	if options.ContainerName != "" {
+		args = append(args, "--name", options.ContainerName)
+	}
+
+	//Add secrets as environment variables.
+	for key, value := range options.Secrets {
+		args = append(args, "-e", fmt.Sprintf("%s=%s", key, value))
+	}
+
+	//Add environment variables.
+	for key, value := range options.EnvVars {
+		args = append(args, "-e", fmt.Sprintf("%s:%s", key, value))
+	}
+
+	//Add the image name and tag.
+	imageNameWithTag := fmt.Sprintf("%s:%s", options.ImageURI, options.Tag)
+	args = append(args, imageNameWithTag)
+
+	fmt.Println("Here are the args for the image", args)
+
+	//Execute the Docker run command.
+	if err := c.runner.RunWithContext(ctx, "docker", args); err != nil {
+		return fmt.Errorf("running container: %w", err)
+	}
+
 	return nil
 }
 
