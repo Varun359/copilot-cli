@@ -1578,6 +1578,21 @@ func (m *MockimageBuilderPusher) EXPECT() *MockimageBuilderPusherMockRecorder {
 	return m.recorder
 }
 
+// Build mocks base method.
+func (m *MockimageBuilderPusher) Build(ctx context.Context, args *dockerengine.BuildArguments, w io.Writer) (string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Build", ctx, args, w)
+	ret0, _ := ret[0].(string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// Build indicates an expected call of Build.
+func (mr *MockimageBuilderPusherMockRecorder) Build(ctx, args, w interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Build", reflect.TypeOf((*MockimageBuilderPusher)(nil).Build), ctx, args, w)
+}
+
 // BuildAndPush mocks base method.
 func (m *MockimageBuilderPusher) BuildAndPush(ctx context.Context, args *dockerengine.BuildArguments, w io.Writer) (string, error) {
 	m.ctrl.T.Helper()
@@ -1652,6 +1667,21 @@ func NewMockrepositoryService(ctrl *gomock.Controller) *MockrepositoryService {
 // EXPECT returns an object that allows the caller to indicate expected use.
 func (m *MockrepositoryService) EXPECT() *MockrepositoryServiceMockRecorder {
 	return m.recorder
+}
+
+// Build mocks base method.
+func (m *MockrepositoryService) Build(ctx context.Context, args *dockerengine.BuildArguments, w io.Writer) (string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Build", ctx, args, w)
+	ret0, _ := ret[0].(string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// Build indicates an expected call of Build.
+func (mr *MockrepositoryServiceMockRecorder) Build(ctx, args, w interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Build", reflect.TypeOf((*MockrepositoryService)(nil).Build), ctx, args, w)
 }
 
 // BuildAndPush mocks base method.
@@ -7466,6 +7496,171 @@ func (m *MocktemplateDiffer) DeployDiff(inTmpl string) (string, error) {
 func (mr *MocktemplateDifferMockRecorder) DeployDiff(inTmpl interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeployDiff", reflect.TypeOf((*MocktemplateDiffer)(nil).DeployDiff), inTmpl)
+}
+
+// MockdockerEngineRunChecker is a mock of dockerEngineRunChecker interface.
+type MockdockerEngineRunChecker struct {
+	ctrl     *gomock.Controller
+	recorder *MockdockerEngineRunCheckerMockRecorder
+}
+
+// MockdockerEngineRunCheckerMockRecorder is the mock recorder for MockdockerEngineRunChecker.
+type MockdockerEngineRunCheckerMockRecorder struct {
+	mock *MockdockerEngineRunChecker
+}
+
+// NewMockdockerEngineRunChecker creates a new mock instance.
+func NewMockdockerEngineRunChecker(ctrl *gomock.Controller) *MockdockerEngineRunChecker {
+	mock := &MockdockerEngineRunChecker{ctrl: ctrl}
+	mock.recorder = &MockdockerEngineRunCheckerMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockdockerEngineRunChecker) EXPECT() *MockdockerEngineRunCheckerMockRecorder {
+	return m.recorder
+}
+
+// CheckDockerEngineRunning mocks base method.
+func (m *MockdockerEngineRunChecker) CheckDockerEngineRunning() error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CheckDockerEngineRunning")
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// CheckDockerEngineRunning indicates an expected call of CheckDockerEngineRunning.
+func (mr *MockdockerEngineRunCheckerMockRecorder) CheckDockerEngineRunning() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CheckDockerEngineRunning", reflect.TypeOf((*MockdockerEngineRunChecker)(nil).CheckDockerEngineRunning))
+}
+
+// MockcontainerRun is a mock of containerRun interface.
+type MockcontainerRun struct {
+	ctrl     *gomock.Controller
+	recorder *MockcontainerRunMockRecorder
+}
+
+// MockcontainerRunMockRecorder is the mock recorder for MockcontainerRun.
+type MockcontainerRunMockRecorder struct {
+	mock *MockcontainerRun
+}
+
+// NewMockcontainerRun creates a new mock instance.
+func NewMockcontainerRun(ctrl *gomock.Controller) *MockcontainerRun {
+	mock := &MockcontainerRun{ctrl: ctrl}
+	mock.recorder = &MockcontainerRunMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockcontainerRun) EXPECT() *MockcontainerRunMockRecorder {
+	return m.recorder
+}
+
+// Run mocks base method.
+func (m *MockcontainerRun) Run(ctx context.Context, options *dockerengine.Runoptions) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Run", ctx, options)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// Run indicates an expected call of Run.
+func (mr *MockcontainerRunMockRecorder) Run(ctx, options interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Run", reflect.TypeOf((*MockcontainerRun)(nil).Run), ctx, options)
+}
+
+// MockecsLocalClient is a mock of ecsLocalClient interface.
+type MockecsLocalClient struct {
+	ctrl     *gomock.Controller
+	recorder *MockecsLocalClientMockRecorder
+}
+
+// MockecsLocalClientMockRecorder is the mock recorder for MockecsLocalClient.
+type MockecsLocalClientMockRecorder struct {
+	mock *MockecsLocalClient
+}
+
+// NewMockecsLocalClient creates a new mock instance.
+func NewMockecsLocalClient(ctrl *gomock.Controller) *MockecsLocalClient {
+	mock := &MockecsLocalClient{ctrl: ctrl}
+	mock.recorder = &MockecsLocalClientMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockecsLocalClient) EXPECT() *MockecsLocalClientMockRecorder {
+	return m.recorder
+}
+
+// DecryptedSecrets mocks base method.
+func (m *MockecsLocalClient) DecryptedSecrets(secrets []*ecs.ContainerSecret) ([]ecs0.EnvVar, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DecryptedSecrets", secrets)
+	ret0, _ := ret[0].([]ecs0.EnvVar)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// DecryptedSecrets indicates an expected call of DecryptedSecrets.
+func (mr *MockecsLocalClientMockRecorder) DecryptedSecrets(secrets interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DecryptedSecrets", reflect.TypeOf((*MockecsLocalClient)(nil).DecryptedSecrets), secrets)
+}
+
+// TaskDefinition mocks base method.
+func (m *MockecsLocalClient) TaskDefinition(app, env, svc string) (*ecs.TaskDefinition, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "TaskDefinition", app, env, svc)
+	ret0, _ := ret[0].(*ecs.TaskDefinition)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// TaskDefinition indicates an expected call of TaskDefinition.
+func (mr *MockecsLocalClientMockRecorder) TaskDefinition(app, env, svc interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "TaskDefinition", reflect.TypeOf((*MockecsLocalClient)(nil).TaskDefinition), app, env, svc)
+}
+
+// MockimageBuilder is a mock of imageBuilder interface.
+type MockimageBuilder struct {
+	ctrl     *gomock.Controller
+	recorder *MockimageBuilderMockRecorder
+}
+
+// MockimageBuilderMockRecorder is the mock recorder for MockimageBuilder.
+type MockimageBuilderMockRecorder struct {
+	mock *MockimageBuilder
+}
+
+// NewMockimageBuilder creates a new mock instance.
+func NewMockimageBuilder(ctrl *gomock.Controller) *MockimageBuilder {
+	mock := &MockimageBuilder{ctrl: ctrl}
+	mock.recorder = &MockimageBuilderMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockimageBuilder) EXPECT() *MockimageBuilderMockRecorder {
+	return m.recorder
+}
+
+// BuildContainerImages mocks base method.
+func (m *MockimageBuilder) BuildContainerImages(out *deploy.UploadArtifactsOutput) (*deploy.UploadArtifactsOutput, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "BuildContainerImages", out)
+	ret0, _ := ret[0].(*deploy.UploadArtifactsOutput)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// BuildContainerImages indicates an expected call of BuildContainerImages.
+func (mr *MockimageBuilderMockRecorder) BuildContainerImages(out interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BuildContainerImages", reflect.TypeOf((*MockimageBuilder)(nil).BuildContainerImages), out)
 }
 
 // MockworkloadStackGenerator is a mock of workloadStackGenerator interface.

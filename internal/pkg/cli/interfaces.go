@@ -170,6 +170,7 @@ type secretDeleter interface {
 
 type imageBuilderPusher interface {
 	BuildAndPush(ctx context.Context, args *dockerengine.BuildArguments, w io.Writer) (string, error)
+	Build(ctx context.Context, args *dockerengine.BuildArguments, w io.Writer) (string, error)
 }
 
 type repositoryLogin interface {
@@ -685,6 +686,23 @@ type workloadDeployer interface {
 
 type templateDiffer interface {
 	DeployDiff(inTmpl string) (string, error)
+}
+
+type dockerEngineRunChecker interface {
+	CheckDockerEngineRunning() error
+}
+
+type containerRun interface {
+	Run(ctx context.Context, options *dockerengine.Runoptions) error
+}
+
+type ecsLocalClient interface {
+	TaskDefinition(app, env, svc string) (*awsecs.TaskDefinition, error)
+	DecryptedSecrets(secrets []*awsecs.ContainerSecret) ([]ecs.EnvVar, error)
+}
+
+type imageBuilder interface {
+	BuildContainerImages(out *clideploy.UploadArtifactsOutput) (*clideploy.UploadArtifactsOutput, error)
 }
 
 type workloadStackGenerator interface {

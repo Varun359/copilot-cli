@@ -4,28 +4,53 @@
 package cli
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ssm"
-	awsecs "github.com/aws/copilot-cli/internal/pkg/aws/ecs"
+	"github.com/aws/copilot-cli/internal/pkg/aws/ecr"
 	"github.com/aws/copilot-cli/internal/pkg/aws/identity"
 	"github.com/aws/copilot-cli/internal/pkg/aws/sessions"
+	clideploy "github.com/aws/copilot-cli/internal/pkg/cli/deploy"
 	"github.com/aws/copilot-cli/internal/pkg/config"
 	"github.com/aws/copilot-cli/internal/pkg/deploy"
+	"github.com/aws/copilot-cli/internal/pkg/deploy/cloudformation"
+	"github.com/aws/copilot-cli/internal/pkg/docker/dockerengine"
 	"github.com/aws/copilot-cli/internal/pkg/ecs"
+	"github.com/aws/copilot-cli/internal/pkg/exec"
+	"github.com/aws/copilot-cli/internal/pkg/manifest"
+	"github.com/aws/copilot-cli/internal/pkg/repository"
 	"github.com/aws/copilot-cli/internal/pkg/term/prompt"
 	"github.com/aws/copilot-cli/internal/pkg/term/selector"
+	"github.com/aws/copilot-cli/internal/pkg/term/syncbuffer"
+	"github.com/aws/copilot-cli/internal/pkg/workspace"
+	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
+	"golang.org/x/sync/errgroup"
 )
 
-const workloadAskPrompt = "Which workload would you like to run locally?"
+const (
+	workloadAskPrompt = "Which workload would you like to run locally?"
 
-type ecsLocalClient interface {
-	TaskDefinition(app, env, svc string) (*awsecs.TaskDefinition, error)
-	DecryptedSecrets(secrets []*awsecs.ContainerSecret) ([]ecs.EnvVar, error)
-	// DecryptedSecretManagerSecrets(secrets []*awsecs.ContainerSecret) ([]ecs.EnvVar, error)
+	pauseContainerURI  = "public.ecr.aws/amazonlinux/amazonlinux"
+	pauseContainerTag  = "2023"
+	pauseContainerName = "pause"
+)
+
+type ContainerPort struct {
+	hostPort      int64
+	containerport int64
+}
+
+type ImageInfo struct {
+	ContainerName string
+	ImageTag      string
+	ImageURI      string
 }
 
 type localRunVars struct {
@@ -40,8 +65,25 @@ type localRunOpts struct {
 
 	sel            deploySelector
 	ecsLocalClient ecsLocalClient
+	sessProvider   *sessions.Provider
 	sess           *session.Session
+	ws             wsWlDirReader
 	store          store
+	cmd            execRunner
+	docker         containerRun
+	prompt         prompter
+	dockerengine   dockerEngineRunChecker
+	targetEnv      *config.Environment
+	targetApp      *config.Application
+	//image             clideploy.ContainerImageIdentifier
+	deployWkld        actionCommand
+	appliedDynamicMft manifest.DynamicWorkload
+	//gitShortCommit    string
+
+	labeledTermPrinter func(fw syncbuffer.FileWriter, bufs []*syncbuffer.LabeledSyncBuffer, opts ...syncbuffer.LabeledTermPrinterOption) clideploy.LabeledTermPrinter
+	deployerFunc       func(o *localRunOpts, workloadType string) (workloadDeployer, error)
+	unmarshal          func([]byte) (manifest.DynamicWorkload, error)
+	newInterpolator    func(app, env string) interpolator
 }
 
 func newLocalRunOpts(vars localRunVars) (*localRunOpts, error) {
@@ -56,12 +98,33 @@ func newLocalRunOpts(vars localRunVars) (*localRunOpts, error) {
 	if err != nil {
 		return nil, err
 	}
+	ws, err := workspace.Use(afero.NewOsFs())
+	if err != nil {
+		return nil, err
+	}
+	//	gitShortCommit := imageTagFromGit(exec.NewCmd())
+	prompt := prompt.New()
+	labeledTermPrinter := func(fw syncbuffer.FileWriter, bufs []*syncbuffer.LabeledSyncBuffer, opts ...syncbuffer.LabeledTermPrinterOption) clideploy.LabeledTermPrinter {
+		return syncbuffer.NewLabeledTermPrinter(fw, bufs, opts...)
+	}
 	opts := &localRunOpts{
-		localRunVars:   vars,
-		sel:            selector.NewDeploySelect(prompt.New(), store, deployStore),
-		store:          store,
-		ecsLocalClient: ecs.New(defaultSess),
-		sess:           defaultSess,
+		localRunVars:    vars,
+		sel:             selector.NewDeploySelect(prompt, store, deployStore),
+		store:           store,
+		sessProvider:    sessProvider,
+		newInterpolator: newManifestInterpolator,
+		ecsLocalClient:  ecs.New(defaultSess),
+		unmarshal:       manifest.UnmarshalWorkload,
+		sess:            defaultSess,
+		docker:          dockerengine.New(exec.NewCmd()),
+		dockerengine:    dockerengine.New(exec.NewCmd()),
+		cmd:             exec.NewCmd(),
+		prompt:          prompt,
+		// image: clideploy.ContainerImageIdentifier{
+		// 	GitShortCommitTag: gitShortCommit,
+		// },
+		labeledTermPrinter: labeledTermPrinter,
+		ws:                 ws,
 	}
 	return opts, nil
 }
@@ -113,11 +176,199 @@ func (o *localRunOpts) Execute() error {
 	}
 
 	secrets := taskDef.Secrets()
-	_, err = o.ecsLocalClient.DecryptedSecrets(secrets)
+	decrytedSecrets, err := o.ecsLocalClient.DecryptedSecrets(secrets)
 	if err != nil {
 		return fmt.Errorf("get secret values: %w:", err)
 	}
 
+	envVars := make(map[string]string)
+	envVariables := taskDef.EnvironmentVariables()
+	for _, envVariable := range envVariables {
+		envVars[envVariable.Name] = envVariable.Value
+	}
+
+	fmt.Println("These are the env variables", envVars)
+
+	//Get the build info here
+	containerPorts := make(map[int64]int64)
+	containerdef := taskDef.ContainerDefinitions
+	for _, container := range containerdef {
+		for _, portMapping := range container.PortMappings {
+			hostPort := aws.Int64Value(portMapping.HostPort)
+			containerport := aws.Int64Value(portMapping.ContainerPort)
+			containerPorts[hostPort] = containerport
+		}
+	}
+
+	env, err := o.store.GetEnvironment(o.appName, o.envName)
+	if err != nil {
+		return fmt.Errorf("get environment %s configuration: %w", o.envName, err)
+	}
+	o.targetEnv = env
+
+	app, err := o.store.GetApplication(o.appName)
+	if err != nil {
+		return err
+	}
+	o.targetApp = app
+
+	fmt.Println("The env name is", env.Name)
+	envSess, err := o.sessProvider.FromRole(env.ManagerRoleARN, env.Region)
+	if err != nil {
+		return err
+	}
+	mft, err := workloadManifest(&workloadManifestInput{
+		name:         o.wkldName,
+		appName:      o.appName,
+		envName:      o.envName,
+		interpolator: o.newInterpolator(o.appName, o.envName),
+		ws:           o.ws,
+		unmarshal:    o.unmarshal,
+		sess:         envSess,
+	})
+	o.appliedDynamicMft = mft
+
+	out := &clideploy.UploadArtifactsOutput{}
+	gitShortCommit := imageTagFromGit(o.cmd)
+	image := clideploy.ContainerImageIdentifier{
+		GitShortCommitTag: gitShortCommit,
+	}
+	defaultSessEnvRegion, err := o.sessProvider.DefaultWithRegion(env.Region)
+	if err != nil {
+		return fmt.Errorf("create default session with region %s: %w", env.Region, err)
+	}
+	resources, err := cloudformation.New(o.sess, cloudformation.WithProgressTracker(os.Stderr)).GetAppResourcesByRegion(app, env.Region)
+	if err != nil {
+		return fmt.Errorf("get application %s resources from region %s: %w", o.appName, o.envName, err)
+	}
+	repoName := clideploy.RepoName(o.appName, o.wkldName)
+	repository := repository.NewWithURI(
+		ecr.New(defaultSessEnvRegion), repoName, resources.RepositoryURLs[o.wkldName])
+
+	in := &clideploy.BuildImagesArgs{
+		Name:               o.wkldName,
+		WorkspacePath:      o.ws.Path(),
+		Image:              image,
+		Mft:                mft.Manifest(),
+		Out:                out,
+		GitShortCommitTag:  gitShortCommit,
+		BuildFunc:          repository.Build,
+		Login:              repository.Login,
+		CheckDockerEngine:  o.dockerengine.CheckDockerEngineRunning,
+		LabeledTermPrinter: o.labeledTermPrinter,
+	}
+	err = clideploy.BuildContainerImages(in)
+	if err != nil {
+		return err
+	}
+	containerNames := out.ContainerNames
+	imageNameswithTag := out.ImageNamesWithTag
+
+	secretsList := make(map[string]string)
+	for _, s := range decrytedSecrets {
+		secretsList[s.Name] = s.Value
+	}
+
+	var imageInfoList []ImageInfo
+	for i, image := range imageNameswithTag {
+		parts := strings.Split(image, ":")
+		imageInfo := ImageInfo{
+			ContainerName: containerNames[i],
+			ImageURI:      parts[0],
+			ImageTag:      parts[1],
+		}
+		imageInfoList = append(imageInfoList, imageInfo)
+	}
+
+	fmt.Println("The image info list is ", imageInfoList)
+
+	manifestContent := mft.Manifest()
+	var sideCarListInfo []ImageInfo
+
+	switch t := manifestContent.(type) {
+	case *manifest.ScheduledJob:
+		sideCarListInfo = getSideCarImages(t.Sidecars)
+	case *manifest.LoadBalancedWebService:
+		sideCarListInfo = getSideCarImages(t.Sidecars)
+	case *manifest.WorkerService:
+		sideCarListInfo = getSideCarImages(t.Sidecars)
+	case *manifest.BackendService:
+		sideCarListInfo = getSideCarImages(t.Sidecars)
+	}
+
+	imageInfoList = append(imageInfoList, sideCarListInfo...)
+
+	err = o.runPauseContainer(containerPorts)
+	if err != nil {
+		return err
+	}
+	time.Sleep(2 * time.Second)
+	err = o.runContainers(imageInfoList, secretsList, envVars)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func getSideCarImages(sidecars map[string]*manifest.SidecarConfig) []ImageInfo {
+	sideCarImages := make(map[string]string)
+	for sideCarName, sidecar := range sidecars {
+		if uri, hasLocation := sidecar.ImageURI(); hasLocation {
+			sideCarImages[sideCarName] = uri
+		}
+	}
+	fmt.Println("\nSidecar Images")
+	var sideCarListInfo []ImageInfo
+	for sidecarName, build := range sideCarImages {
+		fmt.Printf("%s : %s\n", sidecarName, build)
+		parts := strings.Split(build, ":")
+		imageInfo := ImageInfo{
+			ContainerName: sidecarName,
+			ImageURI:      parts[0],
+			ImageTag:      parts[1],
+		}
+		sideCarListInfo = append(sideCarListInfo, imageInfo)
+	}
+	return sideCarListInfo
+}
+
+func (o *localRunOpts) runPauseContainer(containerPorts map[int64]int64) error {
+	runOptions := &dockerengine.Runoptions{
+		ImageURI:       pauseContainerURI,
+		Tag:            pauseContainerTag,
+		ContainerName:  pauseContainerName,
+		ContainerPorts: containerPorts,
+	}
+	go o.docker.Run(context.Background(), runOptions)
+	return nil
+}
+
+func (o *localRunOpts) runContainers(imageInfoList []ImageInfo, secrets map[string]string, envVars map[string]string) error {
+	var errGroup errgroup.Group
+
+	// Iterate over the image info list and perform parallel container runs
+	for _, imageInfo := range imageInfoList {
+		imageInfo := imageInfo
+
+		// Execute each container run in a separate goroutine
+		errGroup.Go(func() error {
+			runOptions := &dockerengine.Runoptions{
+				ImageURI:      imageInfo.ImageURI,
+				Tag:           imageInfo.ImageTag,
+				ContainerName: imageInfo.ContainerName,
+				Secrets:       secrets,
+				EnvVars:       envVars,
+			}
+			o.docker.Run(context.Background(), runOptions)
+
+			return nil
+		})
+	}
+
+	// Wait for all the container runs to complete
+	if err := errGroup.Wait(); err != nil {
+		return err
+	}
 	return nil
 }
 
