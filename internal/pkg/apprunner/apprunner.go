@@ -8,16 +8,24 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/aws/aws-sdk-go/aws/arn"
 	"github.com/aws/aws-sdk-go/aws/session"
 	awsapprunner "github.com/aws/aws-sdk-go/service/apprunner"
 	"github.com/aws/copilot-cli/internal/pkg/aws/apprunner"
 	"github.com/aws/copilot-cli/internal/pkg/aws/resourcegroups"
+	"github.com/aws/copilot-cli/internal/pkg/aws/secretsmanager"
+	"github.com/aws/copilot-cli/internal/pkg/aws/ssm"
 	"github.com/aws/copilot-cli/internal/pkg/deploy"
+	"github.com/aws/copilot-cli/internal/pkg/ecs"
 )
 
 const (
 	serviceResourceType = "apprunner:service"
 )
+
+type secretGetter interface {
+	GetSecretValue(secretName string) (string, error)
+}
 
 type appRunnerClient interface {
 	DescribeOperation(operationId, svcARN string) (*awsapprunner.OperationSummary, error)
@@ -34,6 +42,8 @@ type resourceGetter interface {
 type Client struct {
 	appRunnerClient appRunnerClient
 	rgGetter        resourceGetter
+	ssm             secretGetter
+	secretManager   secretGetter
 }
 
 // New inits a new Client.
@@ -41,6 +51,8 @@ func New(sess *session.Session) *Client {
 	return &Client{
 		rgGetter:        resourcegroups.New(sess),
 		appRunnerClient: apprunner.New(sess),
+		ssm:             ssm.New(sess),
+		secretManager:   secretsmanager.New(sess),
 	}
 }
 
@@ -86,4 +98,34 @@ func (c Client) serviceARN(app, env, svc string) (string, error) {
 		return "", fmt.Errorf("more than one App Runner service with the name %s found in environment %s", svc, env)
 	}
 	return services[0].ARN, nil
+}
+
+func (c Client) DecryptedSecrets(secrets []*apprunner.EnvironmentSecret) ([]ecs.EnvVar, error) {
+	var ssmSecrets []ecs.EnvVar
+	var secretManagerSecrets []ecs.EnvVar
+	for _, secret := range secrets {
+		parsed, err := arn.Parse(secret.Value)
+		if err != nil || parsed.Service == ssm.Namespace {
+			secretValue, err := c.ssm.GetSecretValue(secret.Value)
+			if err != nil {
+				return nil, err
+			}
+			ssmSecrets = append(ssmSecrets, ecs.EnvVar{
+				Name:  secret.Name,
+				Value: secretValue,
+			})
+		}
+		if parsed.Service == secretsmanager.Namespace {
+			secretValue, err := c.secretManager.GetSecretValue(secret.Value)
+			if err != nil {
+				return nil, err
+			}
+			secretManagerSecrets = append(secretManagerSecrets, ecs.EnvVar{
+				Name:  secret.Name,
+				Value: secretValue,
+			})
+		}
+	}
+	allSecrets := append(ssmSecrets, secretManagerSecrets...)
+	return allSecrets, nil
 }

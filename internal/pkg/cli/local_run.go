@@ -13,6 +13,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ssm"
+	"github.com/aws/copilot-cli/internal/pkg/apprunner"
+	awsapprunner "github.com/aws/copilot-cli/internal/pkg/aws/apprunner"
 	"github.com/aws/copilot-cli/internal/pkg/aws/ecr"
 	"github.com/aws/copilot-cli/internal/pkg/aws/identity"
 	"github.com/aws/copilot-cli/internal/pkg/aws/sessions"
@@ -20,6 +22,7 @@ import (
 	"github.com/aws/copilot-cli/internal/pkg/config"
 	"github.com/aws/copilot-cli/internal/pkg/deploy"
 	"github.com/aws/copilot-cli/internal/pkg/deploy/cloudformation"
+	"github.com/aws/copilot-cli/internal/pkg/describe"
 	"github.com/aws/copilot-cli/internal/pkg/docker/dockerengine"
 	"github.com/aws/copilot-cli/internal/pkg/ecs"
 	"github.com/aws/copilot-cli/internal/pkg/exec"
@@ -51,19 +54,22 @@ type localRunVars struct {
 type localRunOpts struct {
 	localRunVars
 
-	sel               deploySelector
-	ecsLocalClient    ecsLocalClient
-	sessProvider      sessionProvider
-	sess              *session.Session
-	targetEnv         *config.Environment
-	targetApp         *config.Application
-	store             store
-	ws                wsWlDirReader
-	cmd               execRunner
-	dockerEngine      dockerEngineRunner
-	repository        repositoryService
-	appliedDynamicMft manifest.DynamicWorkload
-	out               clideploy.UploadArtifactsOutput
+	sel                   deploySelector
+	ecsLocalClient        ecsLocalClient
+	sessProvider          sessionProvider
+	sess                  *session.Session
+	targetEnv             *config.Environment
+	targetApp             *config.Application
+	store                 store
+	ws                    wsWlDirReader
+	cmd                   execRunner
+	dockerEngine          dockerEngineRunner
+	repository            repositoryService
+	appliedDynamicMft     manifest.DynamicWorkload
+	out                   clideploy.UploadArtifactsOutput
+	appRunnerSvcDescriber apprunnerSvcDescriber
+	appRunnerLocalClient  appRunnerLocalClient
+	imageInfoList         []imageInfo
 
 	buildContainerImages func(o *localRunOpts) error
 	configureClients     func(o *localRunOpts) (repositoryService, error)
@@ -98,19 +104,21 @@ func newLocalRunOpts(vars localRunVars) (*localRunOpts, error) {
 		return syncbuffer.NewLabeledTermPrinter(fw, bufs, opts...)
 	}
 	opts := &localRunOpts{
-		localRunVars:       vars,
-		sel:                selector.NewDeploySelect(prompt.New(), store, deployStore),
-		store:              store,
-		ws:                 ws,
-		ecsLocalClient:     ecs.New(defaultSess),
-		newInterpolator:    newManifestInterpolator,
-		sessProvider:       sessProvider,
-		unmarshal:          manifest.UnmarshalWorkload,
-		sess:               defaultSess,
-		cmd:                exec.NewCmd(),
-		dockerEngine:       dockerengine.New(exec.NewCmd()),
-		labeledTermPrinter: labeledTermPrinter,
-		out:                clideploy.UploadArtifactsOutput{},
+		localRunVars:          vars,
+		sel:                   selector.NewDeploySelect(prompt.New(), store, deployStore),
+		store:                 store,
+		ws:                    ws,
+		ecsLocalClient:        ecs.New(defaultSess),
+		newInterpolator:       newManifestInterpolator,
+		sessProvider:          sessProvider,
+		unmarshal:             manifest.UnmarshalWorkload,
+		sess:                  defaultSess,
+		cmd:                   exec.NewCmd(),
+		appRunnerLocalClient:  apprunner.New(defaultSess),
+		appRunnerSvcDescriber: awsapprunner.New(defaultSess),
+		dockerEngine:          dockerengine.New(exec.NewCmd()),
+		labeledTermPrinter:    labeledTermPrinter,
+		out:                   clideploy.UploadArtifactsOutput{},
 	}
 	opts.configureClients = func(o *localRunOpts) (repositoryService, error) {
 		defaultSessEnvRegion, err := o.sessProvider.DefaultWithRegion(o.targetEnv.Region)
@@ -189,35 +197,71 @@ func (o *localRunOpts) validateAndAskWkldEnvName() error {
 
 // Execute builds and runs the workload images locally.
 func (o *localRunOpts) Execute() error {
-	taskDef, err := o.ecsLocalClient.TaskDefinition(o.appName, o.envName, o.wkldName)
-	if err != nil {
-		return fmt.Errorf("get task definition: %w", err)
-	}
+	var decryptedSecrets []ecs.EnvVar
+	var envVars map[string]string
+	var containerPorts map[string]string
+	if o.wkldType == "Request-Driven Web Service" {
+		d, err := describe.NewRDWebServiceDescriber(describe.NewServiceConfig{
+			App:         o.appName,
+			Svc:         o.wkldName,
+			ConfigStore: o.store,
+		})
+		if err != nil {
+			return err
+		}
+		svcARN, err := d.ServiceARN(o.envName)
+		if err != nil {
+			return err
+		}
+		svcDescriber, err := o.appRunnerSvcDescriber.DescribeService(svcARN)
+		if err != nil {
+			return err
+		}
+		fmt.Println("service arn ", svcARN)
+		fmt.Println("svc secrets")
+		envVars = make(map[string]string)
+		decryptedSecrets, err = o.appRunnerLocalClient.DecryptedSecrets(svcDescriber.EnvironmentSecrets)
+		if err != nil {
+			return fmt.Errorf("get secret values: %w:", err)
+		}
+		fmt.Println("service environemnetal variales", svcDescriber.EnvironmentVariables)
+		for _, env := range svcDescriber.EnvironmentVariables {
+			fmt.Println("env Name:", env.Name)
+			fmt.Println("env Value:", env.Value)
+			envVars[env.Name] = env.Value
+		}
+		containerPorts = make(map[string]string)
+		containerPorts[svcDescriber.Port] = svcDescriber.Port
+	} else {
+		taskDef, err := o.ecsLocalClient.TaskDefinition(o.appName, o.envName, o.wkldName)
+		if err != nil {
+			return fmt.Errorf("get task definition: %w", err)
+		}
 
-	secrets := taskDef.Secrets()
-	decryptedSecrets, err := o.ecsLocalClient.DecryptedSecrets(secrets)
-	if err != nil {
-		return fmt.Errorf("get secret values: %w", err)
-	}
+		secrets := taskDef.Secrets()
+		decryptedSecrets, err = o.ecsLocalClient.DecryptedSecrets(secrets)
+		if err != nil {
+			return fmt.Errorf("get secret values: %w", err)
+		}
 
-	envVars := make(map[string]string)
-	envVariables := taskDef.EnvironmentVariables()
-	for _, envVariable := range envVariables {
-		envVars[envVariable.Name] = envVariable.Value
-	}
+		envVars = make(map[string]string)
+		envVariables := taskDef.EnvironmentVariables()
+		for _, envVariable := range envVariables {
+			envVars[envVariable.Name] = envVariable.Value
+		}
 
-	containerPorts := make(map[string]string)
-	containerdef := taskDef.ContainerDefinitions
-	for _, container := range containerdef {
-		for _, portMapping := range container.PortMappings {
-			hostPort := aws.Int64Value(portMapping.HostPort)
-			hostPortStr := strconv.FormatInt(hostPort, 10)
-			containerport := aws.Int64Value(portMapping.ContainerPort)
-			containerportStr := strconv.FormatInt(containerport, 10)
-			containerPorts[hostPortStr] = containerportStr
+		containerPorts = make(map[string]string)
+		containerdef := taskDef.ContainerDefinitions
+		for _, container := range containerdef {
+			for _, portMapping := range container.PortMappings {
+				hostPort := aws.Int64Value(portMapping.HostPort)
+				hostPortStr := strconv.FormatInt(hostPort, 10)
+				containerport := aws.Int64Value(portMapping.ContainerPort)
+				containerportStr := strconv.FormatInt(containerport, 10)
+				containerPorts[hostPortStr] = containerportStr
+			}
 		}
 	}
-
 	env, err := o.store.GetEnvironment(o.appName, o.envName)
 	if err != nil {
 		return fmt.Errorf("get environment %q configuration: %w", o.envName, err)
@@ -265,13 +309,12 @@ func (o *localRunOpts) Execute() error {
 		secretsList[s.Name] = s.Value
 	}
 
-	var imageInfoList []imageInfo
 	for i, image := range imageNames {
 		imageInfo := imageInfo{
 			containerName: containerNames[i],
 			imageURI:      image,
 		}
-		imageInfoList = append(imageInfoList, imageInfo)
+		o.imageInfoList = append(o.imageInfoList, imageInfo)
 	}
 
 	var sideCarListInfo []imageInfo
@@ -286,14 +329,14 @@ func (o *localRunOpts) Execute() error {
 	case *manifest.BackendService:
 		sideCarListInfo = getBuiltSideCarImages(t.Sidecars)
 	}
-	imageInfoList = append(imageInfoList, sideCarListInfo...)
+	o.imageInfoList = append(o.imageInfoList, sideCarListInfo...)
 
 	err = o.runPauseContainer(containerPorts)
 	if err != nil {
 		return err
 	}
 
-	err = o.runContainers(imageInfoList, secretsList, envVars)
+	err = o.runContainers(secretsList, envVars)
 	if err != nil {
 		return err
 	}
@@ -359,11 +402,11 @@ func (o *localRunOpts) runPauseContainer(containerPorts map[string]string) error
 
 }
 
-func (o *localRunOpts) runContainers(imageInfoList []imageInfo, secrets map[string]string, envVars map[string]string) error {
+func (o *localRunOpts) runContainers(secrets map[string]string, envVars map[string]string) error {
 	var errGroup errgroup.Group
 
 	// Iterate over the image info list and perform parallel container runs
-	for _, imageInfo := range imageInfoList {
+	for _, imageInfo := range o.imageInfoList {
 		imageInfo := imageInfo
 
 		// Execute each container run in a separate goroutine

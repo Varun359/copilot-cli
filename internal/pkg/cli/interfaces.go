@@ -11,6 +11,7 @@ import (
 	sdkcloudformation "github.com/aws/aws-sdk-go/service/cloudformation"
 
 	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/copilot-cli/internal/pkg/aws/apprunner"
 	awscloudformation "github.com/aws/copilot-cli/internal/pkg/aws/cloudformation"
 	"github.com/aws/copilot-cli/internal/pkg/aws/codepipeline"
 	"github.com/aws/copilot-cli/internal/pkg/aws/ec2"
@@ -340,6 +341,15 @@ type wsPipelineReader interface {
 	wsPipelineManifestReader
 	relPath
 	PipelineOverridesPath(string) string
+}
+
+type apprunnerSvcDescriber interface {
+	ServiceARN(svc string) (string, error)
+	DescribeService(svcARN string) (*apprunner.Service, error)
+}
+
+type appRunnerLocalClient interface {
+	DecryptedSecrets(secrets []*apprunner.EnvironmentSecret) ([]ecs.EnvVar, error)
 }
 
 type wsPipelineGetter interface {
