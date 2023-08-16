@@ -313,6 +313,24 @@ func (c DockerCmdClient) IsContainerRunning(containerName string) (bool, error) 
 	return output != "", nil
 }
 
+// KillContainer sends a SIGTERM signal to a Docker container with the given containerName.
+func (c DockerCmdClient) KillContainer(containerName string) error {
+	// Execute the Docker kill command with SIGTERM signal.
+	if err := c.runner.Run("docker", []string{"kill", containerName}); err != nil {
+		return fmt.Errorf("killing container: %w", err)
+	}
+	return nil
+}
+
+// RemoveContainer removes a Docker container with the given containerName.
+func (c DockerCmdClient) RemoveContainer(containerName string) error {
+	// Execute the Docker remove command.
+	if err := c.runner.Run("docker", []string{"rm", containerName}); err != nil {
+		return fmt.Errorf("remove container: %w", err)
+	}
+	return nil
+}
+
 // CheckDockerEngineRunning will run `docker info` command to check if the docker engine is running.
 func (c DockerCmdClient) CheckDockerEngineRunning() error {
 	if _, err := osexec.LookPath("docker"); err != nil {
