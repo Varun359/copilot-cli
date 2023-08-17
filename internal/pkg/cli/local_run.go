@@ -297,14 +297,10 @@ func (o *localRunOpts) Execute() error {
 	}
 	o.imageInfoList = append(o.imageInfoList, sidecarImageLocations...)
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
 	errCh := make(chan error, 1)
-
 	// Handle containers when a termination signal is received.
 	go func() {
-		sig := <-sigCh
+		sig := o.NotifyInterrupt()
 		fmt.Println("Received signal:", sig)
 		o.mutex.Lock()
 		o.isContainerTermination = true
@@ -322,22 +318,24 @@ func (o *localRunOpts) Execute() error {
 			errCh <- err
 			return
 		}
-
 		err = o.runContainers(context.Background(), o.imageInfoList, secretsList, envVars)
 		if err != nil {
 			errCh <- err
 			return
 		}
-		errCh <- nil
 	}()
 
-	// Wait for an error from the goroutine listening to termination signals or the container runs.
 	err = <-errCh
 	if err != nil {
 		return err
 	}
-
 	return nil
+}
+
+func (o *localRunOpts) NotifyInterrupt() os.Signal {
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	return <-sigCh
 }
 
 func (o *localRunOpts) getContainerSuffix() string {
@@ -376,6 +374,13 @@ func (o *localRunOpts) runPauseContainer(ctx context.Context, containerPorts map
 
 	go func() {
 		if err := o.dockerEngine.Run(ctx, runOptions); err != nil {
+			o.mutex.Lock()
+			terminate := o.isContainerTermination
+			o.mutex.Unlock()
+			if terminate {
+				errCh <- nil
+				return
+			}
 			errCh <- err
 		}
 	}()
@@ -445,37 +450,27 @@ func (o *localRunOpts) runContainers(ctx context.Context, imageInfoList []clidep
 	return nil
 }
 
+func (o *localRunOpts) killAndRemoveContainer(containerName string) error {
+	if err := o.dockerEngine.KillContainer(containerName); err != nil {
+		return fmt.Errorf("kill container: %w", err)
+	}
+	if err := o.dockerEngine.RemoveContainer(containerName); err != nil {
+		return fmt.Errorf("remove container: %w", err)
+	}
+	return nil
+}
+
 func (o *localRunOpts) handleContainers() error {
 	//kills and removes all the containers ran earlier.
 	containerNetwork := fmt.Sprintf("%s-%s", pauseContainerName, o.containerSuffix)
-	isPauseRunning, err := o.dockerEngine.IsContainerRunning(containerNetwork)
+	err := o.killAndRemoveContainer(containerNetwork)
 	if err != nil {
-		return fmt.Errorf("check if pause container is running: %w", err)
+		return err
 	}
-	if isPauseRunning {
-		if err := o.dockerEngine.KillContainer(containerNetwork); err != nil {
-			return fmt.Errorf("error killing pause container: %w", err)
-		}
-		if err := o.dockerEngine.RemoveContainer(containerNetwork); err != nil {
-			return fmt.Errorf("error removing pause container: %w", err)
-		}
-	}
-
 	for _, imageInfo := range o.imageInfoList {
 		containerNameWithSuffix := fmt.Sprintf("%s-%s", imageInfo.ContainerName, o.containerSuffix)
-
-		isRunning, err := o.dockerEngine.IsContainerRunning(containerNameWithSuffix)
+		err := o.killAndRemoveContainer(containerNameWithSuffix)
 		if err != nil {
-			return fmt.Errorf("check if container is running: %w", err)
-		}
-		if isRunning {
-			if err := o.dockerEngine.KillContainer(containerNameWithSuffix); err != nil {
-				fmt.Println("error Killing container:", err)
-				return err
-			}
-		}
-		if err := o.dockerEngine.RemoveContainer(containerNameWithSuffix); err != nil {
-			fmt.Println("error removing container:", err)
 			return err
 		}
 	}
