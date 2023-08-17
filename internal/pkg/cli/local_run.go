@@ -374,18 +374,15 @@ func (o *localRunOpts) runPauseContainer(ctx context.Context, containerPorts map
 
 	go func() {
 		if err := o.dockerEngine.Run(ctx, runOptions); err != nil {
+			o.mutex.Lock()
+			terminate := o.isContainerTermination
+			o.mutex.Unlock()
+			if terminate {
+				errCh <- nil
+				return
+			}
 			errCh <- err
 		}
-		// if err := o.dockerEngine.Run(ctx, runOptions); err != nil {
-		// 	o.mutex.Lock()
-		// 	terminate := o.isContainerTermination
-		// 	o.mutex.Unlock()
-		// 	if terminate {
-		// 		errCh <- nil
-		// 		return
-		// 	}
-		// 	errCh <- err
-		// }
 	}()
 
 	// go routine to check if pause container is running
